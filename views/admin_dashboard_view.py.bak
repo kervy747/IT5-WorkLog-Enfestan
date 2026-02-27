@@ -1,0 +1,2011 @@
+"""
+Admin Dashboard View
+PyQt6 admin dashboard with employee management and reporting
+"""
+
+import os
+from datetime import datetime, date
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
+    QTableWidget, QTableWidgetItem, QHeaderView, QTabWidget, QDialog,
+    QDateEdit, QComboBox, QLineEdit, QFormLayout, QMessageBox
+)
+from PyQt6.QtCore import Qt, QTimer, QDate, pyqtSignal
+from PyQt6.QtGui import QPixmap
+from controllers.admin_dashboard_controller import AdminDashboardController
+from controllers.employee_controller import EmployeeController
+from controllers.reports_controller import ReportsController
+from views.employee_management_view import AddEmployeeDialog, EditEmployeeDialog
+from views.user_account_view import CreateUserAccountDialog, ChangePasswordDialog
+from models.shift_model import ShiftModel
+from utils.message_box import show_info, show_warning, show_error, show_question
+
+
+class AdminDashboardView(QWidget):
+    """Admin dashboard view"""
+    
+    # Signal emitted when dashboard is closed
+    finished = pyqtSignal()
+    
+    def __init__(self, user_data):
+        """
+        Initialize admin dashboard
+        
+        Args:
+            user_data: Logged-in user information
+        """
+        super().__init__()
+        self.user_data = user_data
+        
+        # Initialize controllers
+        self.admin_controller = AdminDashboardController()
+        self.employee_controller = EmployeeController()
+        self.reports_controller = ReportsController(self)
+        
+        self.init_ui()
+        self.load_data()
+        
+        # Setup timer for real-time clock
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_clock)
+        self.timer.start(1000)
+    
+    def init_ui(self):
+        """Initialize user interface"""
+        self.setWindowTitle("Work Log - Admin Dashboard")
+        self.setMinimumSize(1200, 800)
+        
+        # Main layout
+        main_layout = QVBoxLayout()
+        main_layout.setSpacing(15)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        
+        # ===== HEADER SECTION WITH LOGO =====
+        header_layout = QHBoxLayout()
+        
+        # Logo (top left)
+        logo_label = QLabel()
+        logo_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 
+                                 'assets', 'logo.png')
+        
+        if os.path.exists(logo_path):
+            pixmap = QPixmap(logo_path)
+            scaled_pixmap = pixmap.scaled(
+                50, 50, 
+                Qt.AspectRatioMode.KeepAspectRatio, 
+                Qt.TransformationMode.SmoothTransformation
+            )
+            logo_label.setPixmap(scaled_pixmap)
+        else:
+            logo_label.setText("WL")
+            logo_label.setStyleSheet("font-size: 20px; font-weight: bold; color: white;")
+        
+        header_layout.addWidget(logo_label)
+        
+        # Header title
+        header_title = QLabel("Admin Dashboard")
+        header_title.setStyleSheet("font-size: 20px; font-weight: bold; color: white;")
+        header_layout.addWidget(header_title)
+        
+        header_layout.addStretch()
+        
+        # User info
+        user_info = QLabel(f"Admin: {self.user_data['full_name']}")
+        user_info.setStyleSheet("font-size: 13px; color: white;")
+        header_layout.addWidget(user_info)
+        
+        # Change Password button
+        change_pwd_btn = QPushButton("🔐 Change Password")
+        change_pwd_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        change_pwd_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4A7AB4;
+                color: white;
+                padding: 8px 12px;
+                font-size: 12px;
+                font-weight: bold;
+                border: none;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #3A6AA4;
+            }
+        """)
+        change_pwd_btn.clicked.connect(self.show_change_password_dialog)
+        header_layout.addWidget(change_pwd_btn)
+        
+        # Logout button
+        logout_btn = QPushButton("Logout")
+        logout_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        logout_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FC4A5A;
+                color: white;
+                padding: 8px 16px;
+                font-size: 12px;
+                font-weight: bold;
+                border: none;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #E03A4A;
+            }
+        """)
+        logout_btn.clicked.connect(self.handle_logout)
+        header_layout.addWidget(logout_btn)
+        
+        # Header container
+        header_container = QWidget()
+        header_container.setLayout(header_layout)
+        header_container.setStyleSheet("background-color: #5A8AC4; padding: 12px 20px; border-radius: 8px;")
+        main_layout.addWidget(header_container)
+        
+        # ===== DATE AND TIME =====
+        datetime_layout = QHBoxLayout()
+        
+        self.date_label = QLabel()
+        self.date_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #333333;")
+        datetime_layout.addWidget(self.date_label)
+        
+        datetime_layout.addStretch()
+        
+        self.clock_label = QLabel()
+        self.clock_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #5A8AC4;")
+        datetime_layout.addWidget(self.clock_label)
+        
+        main_layout.addLayout(datetime_layout)
+        self.update_clock()
+        
+        # ===== PERSONAL STATISTICS CARDS =====
+        stats_layout = QHBoxLayout()
+        stats_layout.setSpacing(12)
+        
+        # Total Employees
+        self.total_employees_label = QLabel("0")
+        total_card = self.create_stat_card("Total Employees", self.total_employees_label, "#89E4F7")
+        stats_layout.addWidget(total_card)
+        
+        # Attendance Rate
+        self.attendance_rate_label = QLabel("0.0%")
+        attendance_card = self.create_stat_card("Attendance Rate", self.attendance_rate_label, "#10B981")
+        stats_layout.addWidget(attendance_card)
+        
+        # Avg Hours/Day
+        self.avg_hours_label = QLabel("0.0")
+        avg_hours_card = self.create_stat_card("Avg. Hours/Day", self.avg_hours_label, "#FFD107")
+        stats_layout.addWidget(avg_hours_card)
+        
+        # On-Time Rate
+        self.ontime_rate_label = QLabel("0.0%")
+        ontime_card = self.create_stat_card("On-Time Rate", self.ontime_rate_label, "#5A8AC4")
+        stats_layout.addWidget(ontime_card)
+        
+        main_layout.addLayout(stats_layout)
+        
+        # Second row of statistics
+        stats_layout2 = QHBoxLayout()
+        stats_layout2.setSpacing(12)
+        
+        # Late Today
+        self.late_today_label = QLabel("0")
+        late_card = self.create_stat_card("Late Today", self.late_today_label, "#FFD107")
+        stats_layout2.addWidget(late_card)
+        
+        # Absent Today
+        self.absent_today_label = QLabel("0")
+        absent_card = self.create_stat_card("Absent Today", self.absent_today_label, "#FC4A5A")
+        stats_layout2.addWidget(absent_card)
+        
+        # Overtime Hours
+        self.overtime_label = QLabel("0.0")
+        overtime_card = self.create_stat_card("Overtime Hours", self.overtime_label, "#89E4F7")
+        stats_layout2.addWidget(overtime_card)
+        
+        # Pending Leaves
+        self.pending_leaves_label = QLabel("0")
+        leaves_card = self.create_stat_card("Pending Leaves", self.pending_leaves_label, "#9CA3AF")
+        stats_layout2.addWidget(leaves_card)
+        
+        main_layout.addLayout(stats_layout2)
+        
+        # ===== TABS =====
+        self.tabs = QTabWidget()
+        self.tabs.setStyleSheet("""
+            QTabWidget::pane {
+                border: 1px solid #DDDDDD;
+                background-color: white;
+                border-radius: 4px;
+            }
+            QTabBar::tab {
+                background-color: #E8E8E8;
+                color: #555555;
+                padding: 10px 20px;
+                margin-right: 2px;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QTabBar::tab:selected {
+                background-color: #5A8AC4;
+                color: white;
+            }
+            QTabBar::tab:hover:!selected {
+                background-color: #D0D0D0;
+            }
+        """)
+        
+        # Attendance Tab
+        self.attendance_tab = self.create_attendance_tab()
+        self.tabs.addTab(self.attendance_tab, "Today's Attendance")
+        
+        # Employee Management Tab
+        self.employee_tab = self.create_employee_tab()
+        self.tabs.addTab(self.employee_tab, "Employee Management")
+        
+        # Leave Requests Tab
+        self.leave_tab = self.create_leave_tab()
+        self.tabs.addTab(self.leave_tab, "Leave Requests")
+        
+        # Overtime Requests Tab
+        self.overtime_tab = self.create_overtime_tab()
+        self.tabs.addTab(self.overtime_tab, "Overtime Requests")
+        
+        # Shifts Management Tab
+        self.shifts_tab = self.create_shifts_tab()
+        self.tabs.addTab(self.shifts_tab, "Shift Management")
+        
+        # Reports Tab
+        self.reports_tab = self.create_reports_tab()
+        self.tabs.addTab(self.reports_tab, "Reports")
+        
+        main_layout.addWidget(self.tabs)
+        
+        # Set main layout
+        self.setLayout(main_layout)
+        self.setStyleSheet("QWidget { background-color: #F5F5F5; }")
+    
+    def create_stat_card(self, title, value_label, color):
+        """Create a statistics card widget"""
+        card = QWidget()
+        card_layout = QVBoxLayout()
+        card_layout.setSpacing(5)
+        card_layout.setContentsMargins(15, 15, 15, 15)
+        
+        # Value (large text on top)
+        value_label.setStyleSheet("font-size: 24px; font-weight: bold; color: #333333; border: none; background: transparent;")
+        value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_layout.addWidget(value_label)
+        
+        # Title (small text at bottom)
+        title_label = QLabel(title)
+        title_label.setStyleSheet(
+            "font-size: 11px; "
+            "color: #888888; "
+            "border: none; "
+            "background: transparent;"
+        )
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_layout.addWidget(title_label)
+        
+        card.setLayout(card_layout)
+        card.setStyleSheet(
+            f"QWidget#statCard {{"
+            f"  background-color: white;"
+            f"  border-radius: 6px;"
+            f"  border: 1px solid #DDDDDD;"
+            f"  border-left: 3px solid {color};"
+            f"}}"
+            f"QWidget#statCard QLabel {{"
+            f"  border: none;"
+            f"  background: transparent;"
+            f"}}"
+        )
+        card.setObjectName("statCard")
+        
+        return card
+    
+    def create_attendance_tab(self):
+        """Create attendance monitoring tab"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        layout.setSpacing(15)
+        layout.setContentsMargins(15, 15, 15, 15)
+        
+        # Date filter
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("View Date:"))
+        
+        self.date_filter = QDateEdit()
+        self.date_filter.setDate(QDate.currentDate())
+        self.date_filter.setCalendarPopup(True)
+        self.date_filter.dateChanged.connect(self.load_attendance_data)
+        filter_layout.addWidget(self.date_filter)
+        
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.setStyleSheet(self.get_button_style("#5A8AC4"))
+        refresh_btn.clicked.connect(self.load_attendance_data)
+        filter_layout.addWidget(refresh_btn)
+        
+        filter_layout.addStretch()
+        layout.addLayout(filter_layout)
+        
+        # Attendance table
+        self.attendance_table = QTableWidget()
+        self.attendance_table.setColumnCount(8)
+        self.attendance_table.setHorizontalHeaderLabels([
+            "Employee Code", "Name", "Department", "Time In", 
+            "Time Out", "Lunch Duration", "Paid Hours", "Status"
+        ])
+        
+        self.attendance_table.setStyleSheet("""
+            QTableWidget {
+                background-color: white;
+                border: 1px solid #DDDDDD;
+                border-radius: 4px;
+            }
+            QTableWidget::item {
+                padding: 6px;
+            }
+            QTableWidget::item:selected {
+                background-color: #E3F2FD;
+                color: #333333;
+            }
+            QHeaderView::section {
+                background-color: #5A8AC4;
+                color: white;
+                padding: 12px 8px;
+                font-weight: 600;
+                font-size: 12px;
+                border: none;
+            }
+        """)
+        
+        header = self.attendance_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        
+        layout.addWidget(self.attendance_table)
+        
+        tab.setLayout(layout)
+        return tab
+    
+    def create_employee_tab(self):
+        """Create employee management tab"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        layout.setSpacing(15)
+        layout.setContentsMargins(15, 15, 15, 15)
+        
+        # Action buttons
+        button_layout = QHBoxLayout()
+        
+        add_btn = QPushButton("Add Employee")
+        add_btn.setStyleSheet(self.get_button_style("#89E4F7"))
+        add_btn.clicked.connect(self.show_add_employee_dialog)
+        button_layout.addWidget(add_btn)
+        
+        create_user_btn = QPushButton("Create User Account")
+        create_user_btn.setStyleSheet(self.get_button_style("#5A8AC4"))
+        create_user_btn.clicked.connect(self.show_create_user_dialog)
+        button_layout.addWidget(create_user_btn)
+        
+        refresh_emp_btn = QPushButton("Refresh")
+        refresh_emp_btn.setStyleSheet(self.get_button_style("#5A8AC4"))
+        refresh_emp_btn.clicked.connect(self.load_employee_data)
+        button_layout.addWidget(refresh_emp_btn)
+        
+        edit_btn = QPushButton("Edit Selected")
+        edit_btn.setStyleSheet(self.get_button_style("#FFD107"))
+        edit_btn.clicked.connect(self.edit_selected_employee)
+        button_layout.addWidget(edit_btn)
+        
+        delete_btn = QPushButton("Delete Selected")
+        delete_btn.setStyleSheet(self.get_button_style("#FC4A5A"))
+        delete_btn.clicked.connect(self.delete_selected_employee)
+        button_layout.addWidget(delete_btn)
+        
+        button_layout.addStretch()
+        layout.addLayout(button_layout)
+        
+        # Employee table
+        self.employee_table = QTableWidget()
+        self.employee_table.setColumnCount(8)
+        self.employee_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.employee_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.employee_table.doubleClicked.connect(self.edit_selected_employee)
+        self.employee_table.setHorizontalHeaderLabels([
+            "Employee Code", "Name", "Position", "Department", 
+            "Email", "Shift", "Leave Credits", "Status"
+        ])
+        
+        self.employee_table.setStyleSheet("""
+            QTableWidget {
+                background-color: white;
+                border: 1px solid #DDDDDD;
+                border-radius: 4px;
+            }
+            QTableWidget::item {
+                padding: 6px;
+            }
+            QTableWidget::item:selected {
+                background-color: #E3F2FD;
+                color: #333333;
+            }
+            QHeaderView::section {
+                background-color: #5A8AC4;
+                color: white;
+                padding: 10px 8px;
+                font-weight: bold;
+                font-size: 12px;
+                border: none;
+            }
+        """)
+        
+        header = self.employee_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        
+        layout.addWidget(self.employee_table)
+        
+        tab.setLayout(layout)
+        return tab
+    
+    def create_leave_tab(self):
+        """Create leave requests tab"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        layout.setSpacing(15)
+        layout.setContentsMargins(15, 15, 15, 15)
+        
+        # Filter buttons
+        filter_layout = QHBoxLayout()
+        
+        self.leave_filter = QComboBox()
+        self.leave_filter.addItems(["Pending", "All", "Approved", "Rejected"])
+        self.leave_filter.currentTextChanged.connect(self.load_leave_data)
+        filter_layout.addWidget(QLabel("Filter:"))
+        filter_layout.addWidget(self.leave_filter)
+        
+        refresh_leave_btn = QPushButton("Refresh")
+        refresh_leave_btn.setStyleSheet(self.get_button_style("#5A8AC4"))
+        refresh_leave_btn.clicked.connect(self.load_leave_data)
+        filter_layout.addWidget(refresh_leave_btn)
+        
+        filter_layout.addStretch()
+        layout.addLayout(filter_layout)
+        
+        # Leave requests table
+        self.leave_table = QTableWidget()
+        self.leave_table.setColumnCount(9)
+        self.leave_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.leave_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.leave_table.doubleClicked.connect(self.show_leave_details)
+        self.leave_table.setHorizontalHeaderLabels([
+            "Employee Code", "Name", "Leave Type", "Start Date", "End Date", 
+            "Days", "Reason", "Status", "Requested At"
+        ])
+        
+        self.leave_table.setStyleSheet("""
+            QTableWidget {
+                background-color: white;
+                border: 1px solid #DDDDDD;
+                border-radius: 4px;
+            }
+            QTableWidget::item {
+                padding: 6px;
+            }
+            QTableWidget::item:selected {
+                background-color: #E3F2FD;
+                color: #333333;
+            }
+            QHeaderView::section {
+                background-color: #5A8AC4;
+                color: white;
+                padding: 10px 8px;
+                font-weight: bold;
+                font-size: 12px;
+                border: none;
+            }
+        """)
+        
+        header = self.leave_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        
+        layout.addWidget(self.leave_table)
+        
+        # Action buttons
+        action_layout = QHBoxLayout()
+        
+        approve_btn = QPushButton("Approve Selected")
+        approve_btn.setStyleSheet(self.get_button_style("#10B981"))
+        approve_btn.clicked.connect(self.approve_selected_leave)
+        action_layout.addWidget(approve_btn)
+        
+        reject_btn = QPushButton("Reject Selected")
+        reject_btn.setStyleSheet(self.get_button_style("#FC4A5A"))
+        reject_btn.clicked.connect(self.reject_selected_leave)
+        action_layout.addWidget(reject_btn)
+        
+        action_layout.addStretch()
+        layout.addLayout(action_layout)
+        
+        tab.setLayout(layout)
+        return tab
+    
+    def create_overtime_tab(self):
+        """Create overtime requests tab"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        layout.setSpacing(15)
+        layout.setContentsMargins(15, 15, 15, 15)
+        
+        # Filter buttons
+        filter_layout = QHBoxLayout()
+        
+        self.overtime_filter = QComboBox()
+        self.overtime_filter.addItems(["Pending", "All", "Approved", "Rejected"])
+        self.overtime_filter.currentTextChanged.connect(self.load_overtime_data)
+        filter_layout.addWidget(QLabel("Filter:"))
+        filter_layout.addWidget(self.overtime_filter)
+        
+        refresh_overtime_btn = QPushButton("Refresh")
+        refresh_overtime_btn.setStyleSheet(self.get_button_style("#5A8AC4"))
+        refresh_overtime_btn.clicked.connect(self.load_overtime_data)
+        filter_layout.addWidget(refresh_overtime_btn)
+        
+        filter_layout.addStretch()
+        layout.addLayout(filter_layout)
+        
+        # Overtime requests table
+        self.overtime_table = QTableWidget()
+        self.overtime_table.setColumnCount(8)
+        self.overtime_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.overtime_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.overtime_table.doubleClicked.connect(self.show_overtime_details)
+        self.overtime_table.setHorizontalHeaderLabels([
+            "Employee Code", "Name", "Department", "OT Date", 
+            "Hours", "Reason", "Status", "Requested At"
+        ])
+        
+        self.overtime_table.setStyleSheet("""
+            QTableWidget {
+                background-color: white;
+                border: 1px solid #DDDDDD;
+                border-radius: 4px;
+            }
+            QTableWidget::item {
+                padding: 6px;
+            }
+            QTableWidget::item:selected {
+                background-color: #FEF3C7;
+                color: #333333;
+            }
+            QHeaderView::section {
+                background-color: #F59E0B;
+                color: white;
+                padding: 10px 8px;
+                font-weight: bold;
+                font-size: 12px;
+                border: none;
+            }
+        """)
+        
+        header = self.overtime_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        
+        layout.addWidget(self.overtime_table)
+        
+        # Action buttons
+        action_layout = QHBoxLayout()
+        
+        approve_ot_btn = QPushButton("Approve Selected")
+        approve_ot_btn.setStyleSheet(self.get_button_style("#10B981"))
+        approve_ot_btn.clicked.connect(self.approve_selected_overtime)
+        action_layout.addWidget(approve_ot_btn)
+        
+        reject_ot_btn = QPushButton("Reject Selected")
+        reject_ot_btn.setStyleSheet(self.get_button_style("#FC4A5A"))
+        reject_ot_btn.clicked.connect(self.reject_selected_overtime)
+        action_layout.addWidget(reject_ot_btn)
+        
+        action_layout.addStretch()
+        layout.addLayout(action_layout)
+        
+        tab.setLayout(layout)
+        return tab
+    
+    def create_shifts_tab(self):
+        """Create shifts management tab"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        layout.setSpacing(15)
+        layout.setContentsMargins(15, 15, 15, 15)
+        
+        # Header with buttons
+        header_layout = QHBoxLayout()
+        
+        title = QLabel("Shift Management")
+        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #333440;")
+        header_layout.addWidget(title)
+        
+        header_layout.addStretch()
+        
+        add_shift_btn = QPushButton("+ Add New Shift")
+        add_shift_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #5A8AC4;
+                color: white;
+                padding: 8px 16px;
+                font-size: 12px;
+                font-weight: bold;
+                border: none;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #4A7AB4;
+            }
+        """)
+        add_shift_btn.clicked.connect(self.show_add_shift_dialog)
+        header_layout.addWidget(add_shift_btn)
+        
+        layout.addLayout(header_layout)
+        
+        # Shifts table
+        self.shifts_table = QTableWidget()
+        self.shifts_table.setColumnCount(7)
+        self.shifts_table.setHorizontalHeaderLabels([
+            "Shift Name", "Start Time", "End Time", "Work Hours", 
+            "Grace Period", "Min Hours Before Lunch", "Employees"
+        ])
+        self.shifts_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.shifts_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.shifts_table.setAlternatingRowColors(True)
+        self.shifts_table.setStyleSheet("""
+            QTableWidget {
+                background-color: white;
+                border: 1px solid #DDDDDD;
+                gridline-color: #EEEEEE;
+            }
+            QTableWidget::item {
+                padding: 8px;
+            }
+            QHeaderView::section {
+                background-color: #5A8AC4;
+                color: white;
+                font-weight: bold;
+                padding: 10px;
+                border: none;
+            }
+            QTableWidget::item:alternate {
+                background-color: #F8F9FA;
+            }
+        """)
+        layout.addWidget(self.shifts_table)
+        
+        # Action buttons
+        action_layout = QHBoxLayout()
+        
+        edit_shift_btn = QPushButton("Edit Selected")
+        edit_shift_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #F59E0B;
+                color: white;
+                padding: 8px 16px;
+                font-size: 12px;
+                font-weight: bold;
+                border: none;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #D97706;
+            }
+        """)
+        edit_shift_btn.clicked.connect(self.edit_selected_shift)
+        action_layout.addWidget(edit_shift_btn)
+        
+        delete_shift_btn = QPushButton("Delete Selected")
+        delete_shift_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #EF4444;
+                color: white;
+                padding: 8px 16px;
+                font-size: 12px;
+                font-weight: bold;
+                border: none;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #DC2626;
+            }
+        """)
+        delete_shift_btn.clicked.connect(self.delete_selected_shift)
+        action_layout.addWidget(delete_shift_btn)
+        
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #10B981;
+                color: white;
+                padding: 8px 16px;
+                font-size: 12px;
+                font-weight: bold;
+                border: none;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #059669;
+            }
+        """)
+        refresh_btn.clicked.connect(self.load_shifts_data)
+        action_layout.addWidget(refresh_btn)
+        
+        action_layout.addStretch()
+        layout.addLayout(action_layout)
+        
+        tab.setLayout(layout)
+        return tab
+    
+    def create_reports_tab(self):
+        """Create reports tab"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        layout.setSpacing(15)
+        layout.setContentsMargins(15, 15, 15, 15)
+        
+        # Report type selection
+        report_layout = QFormLayout()
+        
+        self.report_type = QComboBox()
+        self.report_type.addItems(["Daily Report", "Department Report", "Employee Report", "Shift Schedule"])
+        self.report_type.currentTextChanged.connect(self.on_report_type_changed)
+        report_layout.addRow("Report Type:", self.report_type)
+        
+        self.report_date = QDateEdit()
+        self.report_date.setDate(QDate.currentDate())
+        self.report_date.setCalendarPopup(True)
+        report_layout.addRow("Date:", self.report_date)
+        
+        layout.addLayout(report_layout)
+        
+        # Export buttons
+        export_layout = QHBoxLayout()
+        
+        export_csv_btn = QPushButton("Export to CSV")
+        export_csv_btn.setStyleSheet(self.get_button_style("#89E4F7"))
+        export_csv_btn.clicked.connect(self.export_to_csv)
+        export_layout.addWidget(export_csv_btn)
+        
+        export_pdf_btn = QPushButton("Export to PDF")
+        export_pdf_btn.setStyleSheet(self.get_button_style("#5A8AC4"))
+        export_pdf_btn.clicked.connect(self.export_to_pdf)
+        export_layout.addWidget(export_pdf_btn)
+        
+        export_layout.addStretch()
+        layout.addLayout(export_layout)
+        
+        layout.addStretch()
+        
+        tab.setLayout(layout)
+        return tab
+    
+    def get_button_style(self, color):
+        """Get button stylesheet"""
+        # Determine text color based on background
+        if color == "#FFD107":  # Yellow warning button
+            text_color = "#333333"  # Dark text for better contrast
+        else:
+            text_color = "white"
+        
+        return f"""
+            QPushButton {{
+                background-color: {color};
+                color: {text_color};
+                padding: 8px 16px;
+                font-size: 12px;
+                font-weight: bold;
+                border: none;
+                border-radius: 4px;
+                min-width: 100px;
+            }}
+            QPushButton:hover {{
+                opacity: 0.9;
+            }}
+        """
+    
+    def update_clock(self):
+        """Update date and time display"""
+        now = datetime.now()
+        self.date_label.setText(now.strftime("%A, %B %d, %Y"))
+        self.clock_label.setText(now.strftime("%I:%M:%S %p"))
+    
+    def load_data(self):
+        """Load all dashboard data"""
+        self.load_statistics()
+        self.load_attendance_data()
+        self.load_employee_data()
+        self.load_leave_data()
+        self.load_overtime_data()
+        self.load_shifts_data()
+    
+    def load_statistics(self):
+        """Load company-wide statistics"""
+        from models.employee_model import EmployeeModel
+        from models.attendance_model import AttendanceModel
+        from models.leave_model import LeaveModel
+        from decimal import Decimal
+        
+        # Get all non-admin employees (exclude admins from statistics)
+        all_employees = EmployeeModel.get_non_admin_employees()
+        total_employees = len(all_employees)
+        
+        # Get today's attendance records
+        today_attendance = AttendanceModel.get_all_attendance(date.today())
+        
+        # Get employees on approved leave today
+        approved_leaves_today = []
+        all_leaves = LeaveModel.get_all_leaves("Approved")
+        for leave in all_leaves:
+            start_date = leave.get('start_date')
+            end_date = leave.get('end_date')
+            # Check if today falls within the leave period
+            if start_date and end_date:
+                if start_date <= date.today() <= end_date:
+                    approved_leaves_today.append(leave.get('employee_id'))
+        
+        on_leave_count = len(approved_leaves_today)
+        
+        # Calculate statistics
+        present_count = len(today_attendance)
+        late_count = sum(1 for record in today_attendance if record.get('status') and 'Late' in str(record.get('status', '')))
+        # Absent = Total - Present - On Approved Leave
+        absent_count = total_employees - present_count - on_leave_count
+        
+        # Attendance rate (considering employees on leave as "legitimate absence")
+        # Expected to work = Total - On Leave
+        expected_to_work = total_employees - on_leave_count
+        attendance_rate = (present_count / expected_to_work * 100) if expected_to_work > 0 else 0
+        
+        # On-time rate (employees who are present and not late out of those expected to work)
+        ontime_count = present_count - late_count
+        ontime_rate = (ontime_count / expected_to_work * 100) if expected_to_work > 0 else 0
+        
+        # Average hours per day (only for employees who checked out)
+        def get_hours(record):
+            paid_hours = record.get('paid_hours')
+            if paid_hours is None:
+                return 0
+            if isinstance(paid_hours, Decimal):
+                return float(paid_hours)
+            return float(paid_hours) if paid_hours else 0
+        
+        total_hours = sum(get_hours(record) for record in today_attendance)
+        avg_hours = total_hours / present_count if present_count > 0 else 0
+        
+        # Overtime hours (hours beyond 8 per employee)
+        overtime_hours = sum(max(0, get_hours(record) - 8) for record in today_attendance)
+        
+        # Update labels
+        self.total_employees_label.setText(str(total_employees))
+        self.total_employees_label.setStyleSheet(
+            "font-size: 32px; "
+            "font-weight: bold; "
+            "color: #3B82F6;"
+        )
+        
+        self.attendance_rate_label.setText(f"{attendance_rate:.1f}%")
+        self.attendance_rate_label.setStyleSheet(
+            "font-size: 32px; "
+            "font-weight: bold; "
+            "color: #10B981;"
+        )
+        
+        self.avg_hours_label.setText(f"{avg_hours:.1f}")
+        self.avg_hours_label.setStyleSheet(
+            "font-size: 32px; "
+            "font-weight: bold; "
+            "color: #F59E0B;"
+        )
+        
+        self.ontime_rate_label.setText(f"{ontime_rate:.1f}%")
+        self.ontime_rate_label.setStyleSheet(
+            "font-size: 32px; "
+            "font-weight: bold; "
+            "color: #3B82F6;"
+        )
+        
+        self.late_today_label.setText(str(late_count))
+        self.late_today_label.setStyleSheet(
+            "font-size: 32px; "
+            "font-weight: bold; "
+            "color: #F59E0B;"
+        )
+        
+        self.absent_today_label.setText(str(absent_count))
+        self.absent_today_label.setStyleSheet(
+            "font-size: 32px; "
+            "font-weight: bold; "
+            "color: #EF4444;"
+        )
+        
+        self.overtime_label.setText(f"{overtime_hours:.1f}")
+        self.overtime_label.setStyleSheet(
+            "font-size: 32px; "
+            "font-weight: bold; "
+            "color: #3B82F6;"
+        )
+        
+        # Get pending leaves count
+        pending_leaves = LeaveModel.get_pending_count()
+        self.pending_leaves_label.setText(str(pending_leaves))
+        self.pending_leaves_label.setStyleSheet(
+            "font-size: 32px; "
+            "font-weight: bold; "
+            "color: #9CA3AF;"
+        )
+    
+    def load_attendance_data(self):
+        """Load attendance table data"""
+        selected_date = self.date_filter.date().toPyDate()
+        records = self.admin_controller.get_all_attendance(selected_date)
+        
+        self.attendance_table.setRowCount(len(records))
+        
+        for row, record in enumerate(records):
+            self.attendance_table.setItem(row, 0, QTableWidgetItem(str(record.get('employee_code', '-'))))
+            self.attendance_table.setItem(row, 1, QTableWidgetItem(str(record.get('full_name', '-'))))
+            self.attendance_table.setItem(row, 2, QTableWidgetItem(str(record.get('department', '-'))))
+            self.attendance_table.setItem(row, 3, QTableWidgetItem(self.format_time(record.get('time_in'))))
+            self.attendance_table.setItem(row, 4, QTableWidgetItem(self.format_time(record.get('time_out'))))
+            self.attendance_table.setItem(row, 5, QTableWidgetItem(self.format_hours(record.get('lunch_duration'))))
+            self.attendance_table.setItem(row, 6, QTableWidgetItem(self.format_hours(record.get('paid_hours'))))
+            self.attendance_table.setItem(row, 7, QTableWidgetItem(str(record.get('status', '-'))))
+        
+        # Refresh statistics if viewing today's data
+        if selected_date == date.today():
+            self.load_statistics()
+    
+    def load_employee_data(self):
+        """Load employee table data"""
+        employees = self.employee_controller.get_all_employees()
+        
+        self.employee_table.setRowCount(len(employees))
+        
+        for row, emp in enumerate(employees):
+            self.employee_table.setItem(row, 0, QTableWidgetItem(str(emp.get('employee_code', '-'))))
+            self.employee_table.setItem(row, 1, QTableWidgetItem(str(emp.get('full_name', '-'))))
+            self.employee_table.setItem(row, 2, QTableWidgetItem(str(emp.get('position', '-'))))
+            self.employee_table.setItem(row, 3, QTableWidgetItem(str(emp.get('department', '-'))))
+            self.employee_table.setItem(row, 4, QTableWidgetItem(str(emp.get('email', '-'))))
+            
+            # Get shift name for employee
+            shift_name = '-'
+            if emp.get('shift_id'):
+                shift = ShiftModel.get_shift_by_id(emp['shift_id'])
+                if shift:
+                    shift_name = shift.get('shift_name', '-')
+            self.employee_table.setItem(row, 5, QTableWidgetItem(shift_name))
+            
+            self.employee_table.setItem(row, 6, QTableWidgetItem(str(emp.get('leave_credits', 0))))
+            self.employee_table.setItem(row, 7, QTableWidgetItem(str(emp.get('status', '-'))))
+    
+    def format_time(self, time_value):
+        """Format time for display"""
+        if time_value:
+            if hasattr(time_value, 'strftime'):
+                return time_value.strftime('%I:%M %p')
+            return str(time_value)
+        return '-'
+    
+    def format_hours(self, hours_value):
+        """Format hours for display"""
+        if hours_value is not None:
+            return f"{hours_value:.2f}"
+        return '-'
+    
+    def show_add_employee_dialog(self):
+        """Show dialog to add new employee"""
+        dialog = AddEmployeeDialog(self)
+        if dialog.exec():
+            # Employee was added successfully, refresh the table and statistics
+            self.load_employee_data()
+            self.load_statistics()
+    
+    def edit_selected_employee(self):
+        """Edit the selected employee"""
+        selected_rows = self.employee_table.selectionModel().selectedRows()
+        
+        if not selected_rows:
+            show_warning(self, "No Selection", "Please select an employee to edit.")
+            return
+        
+        # Get selected row
+        row = selected_rows[0].row()
+        
+        # Get employee data from table
+        employee_code = self.employee_table.item(row, 0).text()
+        
+        # Get full employee data from database
+        employees = self.employee_controller.get_all_employees()
+        employee_data = None
+        for emp in employees:
+            if emp['employee_code'] == employee_code:
+                employee_data = emp
+                break
+        
+        if employee_data:
+            dialog = EditEmployeeDialog(employee_data, self)
+            if dialog.exec():
+                # Employee was updated successfully, refresh the table
+                self.load_employee_data()
+    
+    def show_create_user_dialog(self):
+        """Show dialog to create user account"""
+        dialog = CreateUserAccountDialog(self)
+        if dialog.exec():
+            # User account was created successfully
+            show_info(self, "Next Steps", "User account created! The employee can now login to the system.")
+    
+    def delete_selected_employee(self):
+        """Delete the selected employee"""
+        selected_rows = self.employee_table.selectionModel().selectedRows()
+        
+        if not selected_rows:
+            show_warning(self, "No Selection", "Please select an employee to delete.")
+            return
+        
+        # Get selected row
+        row = selected_rows[0].row()
+        
+        # Get employee data from table
+        employee_code = self.employee_table.item(row, 0).text()
+        employee_name = self.employee_table.item(row, 1).text()
+        
+        # Create custom confirmation dialog with explicit buttons
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Confirm Deletion")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(500)
+        
+        layout = QVBoxLayout()
+        
+        # Warning icon and message
+        message = QLabel(
+            f"<h3>⚠️ Permanently Delete Employee?</h3>"
+            f"<p><b>Employee Code:</b> {employee_code}<br>"
+            f"<b>Name:</b> {employee_name}</p>"
+            f"<p><b>WARNING:</b> This will permanently delete:</p>"
+            f"<ul>"
+            f"<li>Employee record</li>"
+            f"<li>User account</li>"
+            f"<li>All attendance records</li>"
+            f"</ul>"
+            f"<p><b style='color: #FC4A5A;'>This action CANNOT be undone!</b></p>"
+        )
+        message.setWordWrap(True)
+        message.setStyleSheet("padding: 20px; background-color: #FFF3CD; border-radius: 5px;")
+        layout.addWidget(message)
+        
+        # Button layout
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        # Cancel button
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet(self.get_button_style("#687280"))
+        cancel_btn.clicked.connect(dialog.reject)
+        button_layout.addWidget(cancel_btn)
+        
+        # Delete button
+        delete_btn = QPushButton("Yes, Delete Permanently")
+        delete_btn.setStyleSheet(self.get_button_style("#FC4A5A"))
+        delete_btn.clicked.connect(dialog.accept)
+        button_layout.addWidget(delete_btn)
+        
+        layout.addLayout(button_layout)
+        dialog.setLayout(layout)
+        
+        # Show dialog and check result
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # Get full employee data from database
+            employees = self.employee_controller.get_all_employees()
+            employee_id = None
+            for emp in employees:
+                if emp['employee_code'] == employee_code:
+                    employee_id = emp['id']
+                    break
+            
+            if employee_id:
+                # Permanently delete the employee
+                success = self.employee_controller.delete_employee(employee_id)
+                
+                if success:
+                    show_info(self, "Employee Deleted", f"{employee_name} has been permanently deleted from the system.")
+                    self.load_employee_data()
+                    self.load_statistics()  # Refresh statistics after deletion
+                else:
+                    show_error(self, "Error", "Failed to delete employee. Please try again.")
+    
+    def export_to_csv(self):
+        """Export report to CSV"""
+        data, filename = self.get_report_data()
+        
+        if data:
+            self.reports_controller.export_to_csv(data, filename.replace('.pdf', '.csv'))
+        else:
+            show_warning(self, "No Data", "No data to export.")
+    
+    def export_to_pdf(self):
+        """Export report to PDF"""
+        data, filename = self.get_report_data()
+        
+        if data:
+            self.reports_controller.export_to_pdf(data, filename)
+        else:
+            show_warning(self, "No Data", "No data to export.")
+    
+    def get_report_data(self):
+        """Get data based on selected report type"""
+        report_type = self.report_type.currentText()
+        target_date = self.report_date.date().toPyDate()
+        
+        if report_type == "Daily Report":
+            data = self.admin_controller.get_all_attendance(target_date)
+            filename = f"daily_report_{target_date}.pdf"
+        elif report_type == "Department Report":
+            # Get attendance grouped by department
+            all_attendance = self.admin_controller.get_all_attendance(target_date)
+            data = all_attendance  # Could add department grouping
+            filename = f"department_report_{target_date}.pdf"
+        elif report_type == "Employee Report":
+            data = self.employee_controller.get_all_employees()
+            filename = f"employee_report_{target_date}.pdf"
+        elif report_type == "Shift Schedule":
+            data = self.get_shift_schedule_data()
+            filename = f"shift_schedule_{target_date}.pdf"
+        else:
+            data = None
+            filename = "report.pdf"
+        
+        return data, filename
+    
+    def get_shift_schedule_data(self):
+        """Get shift schedule data with employees"""
+        from models.shift_model import ShiftModel
+        from models.employee_model import EmployeeModel
+        
+        shifts = ShiftModel.get_all_shifts()
+        employees = EmployeeModel.get_all_employees()
+        
+        # Build report data
+        data = []
+        for emp in employees:
+            shift = None
+            if emp.get('shift_id'):
+                shift = ShiftModel.get_shift_by_id(emp['shift_id'])
+            
+            data.append({
+                'Employee Code': emp.get('employee_code', '-'),
+                'Employee Name': emp.get('full_name', '-'),
+                'Department': emp.get('department', '-'),
+                'Shift Name': shift.get('shift_name', 'Not Assigned') if shift else 'Not Assigned',
+                'Start Time': self.format_shift_time(shift.get('start_time')) if shift else '-',
+                'End Time': self.format_shift_time(shift.get('end_time')) if shift else '-',
+                'Work Hours': f"{shift.get('work_hours', 8):.1f}" if shift else '-',
+                'Grace Period': f"{shift.get('grace_period_mins', 15)} mins" if shift else '-'
+            })
+        
+        return data
+    
+    def on_report_type_changed(self, report_type):
+        """Handle report type change"""
+        # Hide date for Shift Schedule since it's not date-dependent
+        if report_type == "Shift Schedule":
+            self.report_date.setEnabled(False)
+        else:
+            self.report_date.setEnabled(True)
+    
+    def show_change_password_dialog(self):
+        """Show change password dialog"""
+        dialog = ChangePasswordDialog(self.user_data, self)
+        dialog.exec()
+    
+    def handle_logout(self):
+        """Handle logout"""
+        # Create custom logout confirmation dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Confirm Logout")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(400)
+        
+        layout = QVBoxLayout()
+        
+        # Message
+        message = QLabel(
+            "<h3>Confirm Logout</h3>"
+            "<p>Are you sure you want to logout?</p>"
+        )
+        message.setWordWrap(True)
+        message.setStyleSheet("padding: 20px;")
+        layout.addWidget(message)
+        
+        # Button layout
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        # No button
+        no_btn = QPushButton("No")
+        no_btn.setStyleSheet(self.get_button_style("#687280"))
+        no_btn.clicked.connect(dialog.reject)
+        button_layout.addWidget(no_btn)
+        
+        # Yes button
+        yes_btn = QPushButton("Yes, Logout")
+        yes_btn.setStyleSheet(self.get_button_style("#5A8AC4"))
+        yes_btn.clicked.connect(dialog.accept)
+        button_layout.addWidget(yes_btn)
+        
+        layout.addLayout(button_layout)
+        dialog.setLayout(layout)
+        
+        # Show dialog and check result
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.finished.emit()
+            self.close()
+    
+    def load_leave_data(self):
+        """Load leave requests data"""
+        from models.leave_model import LeaveModel
+        
+        # Get filter
+        filter_text = self.leave_filter.currentText()
+        
+        if filter_text == "All":
+            leaves = LeaveModel.get_all_leaves()
+        elif filter_text == "Pending":
+            leaves = LeaveModel.get_all_leaves("Pending")
+        elif filter_text == "Approved":
+            leaves = LeaveModel.get_all_leaves("Approved")
+        else:  # Rejected
+            leaves = LeaveModel.get_all_leaves("Rejected")
+        
+        self.leave_table.setRowCount(len(leaves))
+        
+        for row, leave in enumerate(leaves):
+            self.leave_table.setItem(row, 0, QTableWidgetItem(str(leave.get('employee_code', '-'))))
+            self.leave_table.setItem(row, 1, QTableWidgetItem(str(leave.get('full_name', '-'))))
+            self.leave_table.setItem(row, 2, QTableWidgetItem(str(leave.get('leave_type', '-'))))
+            self.leave_table.setItem(row, 3, QTableWidgetItem(str(leave.get('start_date', '-'))))
+            self.leave_table.setItem(row, 4, QTableWidgetItem(str(leave.get('end_date', '-'))))
+            self.leave_table.setItem(row, 5, QTableWidgetItem(str(leave.get('days_count', '-'))))
+            self.leave_table.setItem(row, 6, QTableWidgetItem(str(leave.get('reason', '-'))))
+            
+            # Color-code status
+            from PyQt6.QtGui import QColor, QBrush
+            status_item = QTableWidgetItem(str(leave.get('status', '-')))
+            status = leave.get('status', '')
+            if status == 'Approved':
+                status_item.setForeground(QBrush(QColor("#10B981")))
+            elif status == 'Rejected':
+                status_item.setForeground(QBrush(QColor("#EF4444")))
+            elif status == 'Pending':
+                status_item.setForeground(QBrush(QColor("#F59E0B")))
+            self.leave_table.setItem(row, 7, status_item)
+            
+            self.leave_table.setItem(row, 8, QTableWidgetItem(str(leave.get('requested_at', '-'))))
+            
+            # Store complete leave data in the first item for retrieval
+            self.leave_table.item(row, 0).setData(Qt.ItemDataRole.UserRole, leave)
+    
+    def approve_selected_leave(self):
+        """Approve the selected leave request"""
+        from models.leave_model import LeaveModel
+        
+        selected_rows = self.leave_table.selectionModel().selectedRows()
+        
+        if not selected_rows:
+            show_warning(self, "No Selection", "Please select a leave request to approve.")
+            return
+        
+        row = selected_rows[0].row()
+        leave_data = self.leave_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        leave_id = leave_data.get('id')
+        employee_name = self.leave_table.item(row, 1).text()
+        days = self.leave_table.item(row, 5).text()
+        status = self.leave_table.item(row, 7).text()
+        
+        if status != 'Pending':
+            show_warning(self, "Invalid Action", f"This leave request has already been {status.lower()}.")
+            return
+        
+        # Confirmation dialog
+        if show_question(self, "Approve Leave", f"Approve leave request for {employee_name}?\n\nThis will deduct {days} day(s) from their leave credits."):
+            admin_user_id = self.user_data.get('id')
+            if LeaveModel.approve_leave(leave_id, admin_user_id):
+                show_info(self, "Success", f"Leave request approved for {employee_name}.")
+                self.load_leave_data()
+                self.load_statistics()  # Refresh pending leaves count
+            else:
+                show_error(self, "Error", "Failed to approve leave. Employee may not have enough leave credits.")
+    
+    def reject_selected_leave(self):
+        """Reject the selected leave request"""
+        from models.leave_model import LeaveModel
+        
+        selected_rows = self.leave_table.selectionModel().selectedRows()
+        
+        if not selected_rows:
+            show_warning(self, "No Selection", "Please select a leave request to reject.")
+            return
+        
+        row = selected_rows[0].row()
+        leave_data = self.leave_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        leave_id = leave_data.get('id')
+        employee_name = self.leave_table.item(row, 1).text()
+        status = self.leave_table.item(row, 7).text()
+        
+        if status != 'Pending':
+            show_warning(self, "Invalid Action", f"This leave request has already been {status.lower()}.")
+            return
+        
+        # Ask for rejection reason
+        from PyQt6.QtWidgets import QInputDialog
+        remarks, ok = QInputDialog.getText(
+            self,
+            "Reject Leave",
+            f"Reject leave request for {employee_name}?\\n\\nReason (optional):"
+        )
+        
+        if ok:
+            admin_user_id = self.user_data.get('id')
+            if LeaveModel.reject_leave(leave_id, admin_user_id, remarks if remarks else None):
+                show_info(self, "Success", f"Leave request rejected for {employee_name}.")
+                self.load_leave_data()
+                self.load_statistics()  # Refresh pending leaves count
+            else:
+                show_error(self, "Error", "Failed to reject leave request.")
+    
+    def show_leave_details(self):
+        """Show detailed information about the selected leave request"""
+        selected_rows = self.leave_table.selectionModel().selectedRows()
+        
+        if not selected_rows:
+            return
+        
+        row = selected_rows[0].row()
+        leave_data = self.leave_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        
+        if not leave_data:
+            return
+        
+        # Create detail dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Leave Request Details")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(600)
+        
+        layout = QVBoxLayout()
+        
+        # Status header with color
+        status = leave_data.get('status', 'N/A')
+        if status == 'Approved':
+            status_color = "#10B981"
+            status_bg = "#D1FAE5"
+        elif status == 'Rejected':
+            status_color = "#EF4444"
+            status_bg = "#FEE2E2"
+        else:  # Pending
+            status_color = "#F59E0B"
+            status_bg = "#FEF3C7"
+        
+        status_label = QLabel(f"<h2 style='color: {status_color};'>Status: {status}</h2>")
+        status_label.setStyleSheet(f"padding: 15px; background-color: {status_bg}; border-radius: 5px;")
+        status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(status_label)
+        
+        # Employee information
+        employee_info = QLabel(
+            f"<h3>Employee Information</h3>"
+            f"<table style='width: 100%;'>"
+            f"<tr><td><b>Employee Code:</b></td><td>{leave_data.get('employee_code', 'N/A')}</td></tr>"
+            f"<tr><td><b>Name:</b></td><td>{leave_data.get('full_name', 'N/A')}</td></tr>"
+            f"<tr><td><b>Department:</b></td><td>{leave_data.get('department', 'N/A')}</td></tr>"
+            f"<tr><td><b>Available Leave Credits:</b></td><td>{leave_data.get('leave_credits', 'N/A')} days</td></tr>"
+            f"</table>"
+        )
+        employee_info.setWordWrap(True)
+        employee_info.setStyleSheet("padding: 15px; background-color: #F3F4F6; border-radius: 5px;")
+        layout.addWidget(employee_info)
+        
+        # Leave details
+        leave_info = QLabel(
+            f"<h3>Leave Details</h3>"
+            f"<table style='width: 100%;'>"
+            f"<tr><td><b>Leave Type:</b></td><td>{leave_data.get('leave_type', 'N/A')}</td></tr>"
+            f"<tr><td><b>Start Date:</b></td><td>{leave_data.get('start_date', 'N/A')}</td></tr>"
+            f"<tr><td><b>End Date:</b></td><td>{leave_data.get('end_date', 'N/A')}</td></tr>"
+            f"<tr><td><b>Number of Days:</b></td><td style='font-weight: bold; color: #5A8AC4;'>{leave_data.get('days_count', 'N/A')} day(s)</td></tr>"
+            f"<tr><td><b>Requested On:</b></td><td>{leave_data.get('requested_at', 'N/A')}</td></tr>"
+            f"</table>"
+        )
+        leave_info.setWordWrap(True)
+        leave_info.setStyleSheet("padding: 15px; background-color: #EFF6FF; border-radius: 5px;")
+        layout.addWidget(leave_info)
+        
+        # Reason
+        reason_label = QLabel("<h3>Reason</h3>")
+        layout.addWidget(reason_label)
+        
+        reason_text = QLabel(f"<p>{leave_data.get('reason', 'No reason provided.')}</p>")
+        reason_text.setWordWrap(True)
+        reason_text.setStyleSheet("padding: 15px; background-color: #FFFBEB; border-radius: 5px; border: 1px solid #FCD34D;")
+        layout.addWidget(reason_text)
+        
+        # Review information (if approved/rejected)
+        if leave_data.get('reviewed_at'):
+            review_info = QLabel(
+                f"<h3>Review Information</h3>"
+                f"<table style='width: 100%;'>"
+                f"<tr><td><b>Reviewed On:</b></td><td>{leave_data.get('reviewed_at', 'N/A')}</td></tr>"
+                f"<tr><td><b>Remarks:</b></td><td>{leave_data.get('remarks', 'No remarks')}</td></tr>"
+                f"</table>"
+            )
+            review_info.setWordWrap(True)
+            review_info.setStyleSheet("padding: 15px; background-color: #F9FAFB; border-radius: 5px;")
+            layout.addWidget(review_info)
+        
+        # Close button
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        close_btn = QPushButton("Close")
+        close_btn.setStyleSheet(self.get_button_style("#5A8AC4"))
+        close_btn.clicked.connect(dialog.accept)
+        button_layout.addWidget(close_btn)
+        
+        layout.addLayout(button_layout)
+        dialog.setLayout(layout)
+        
+        dialog.exec()
+
+    def load_overtime_data(self):
+        """Load overtime requests data"""
+        from models.overtime_model import OvertimeModel
+        
+        # Get filter
+        filter_text = self.overtime_filter.currentText()
+        
+        if filter_text == "All":
+            overtimes = OvertimeModel.get_all_requests()
+        elif filter_text == "Pending":
+            overtimes = OvertimeModel.get_pending_requests()
+        elif filter_text == "Approved":
+            # Get all and filter
+            all_requests = OvertimeModel.get_all_requests()
+            overtimes = [r for r in all_requests if r.get('status') == 'Approved']
+        else:  # Rejected
+            all_requests = OvertimeModel.get_all_requests()
+            overtimes = [r for r in all_requests if r.get('status') == 'Rejected']
+        
+        self.overtime_table.setRowCount(len(overtimes))
+        
+        for row, ot in enumerate(overtimes):
+            self.overtime_table.setItem(row, 0, QTableWidgetItem(str(ot.get('employee_code', '-'))))
+            self.overtime_table.setItem(row, 1, QTableWidgetItem(str(ot.get('full_name', '-'))))
+            self.overtime_table.setItem(row, 2, QTableWidgetItem(str(ot.get('department', '-'))))
+            self.overtime_table.setItem(row, 3, QTableWidgetItem(str(ot.get('request_date', '-'))))
+            self.overtime_table.setItem(row, 4, QTableWidgetItem(f"{ot.get('hours_requested', 0):.1f} hrs"))
+            
+            # Truncate reason if too long
+            reason = str(ot.get('reason', '-'))
+            if len(reason) > 50:
+                reason = reason[:47] + "..."
+            self.overtime_table.setItem(row, 5, QTableWidgetItem(reason))
+            
+            # Color-code status
+            from PyQt6.QtGui import QColor, QBrush
+            status_item = QTableWidgetItem(str(ot.get('status', '-')))
+            status = ot.get('status', '')
+            if status == 'Approved':
+                status_item.setForeground(QBrush(QColor("#10B981")))
+            elif status == 'Rejected':
+                status_item.setForeground(QBrush(QColor("#EF4444")))
+            elif status == 'Pending':
+                status_item.setForeground(QBrush(QColor("#F59E0B")))
+            self.overtime_table.setItem(row, 6, status_item)
+            
+            self.overtime_table.setItem(row, 7, QTableWidgetItem(str(ot.get('created_at', '-'))))
+            
+            # Store complete overtime data in the first item for retrieval
+            self.overtime_table.item(row, 0).setData(Qt.ItemDataRole.UserRole, ot)
+    
+    def approve_selected_overtime(self):
+        """Approve the selected overtime request"""
+        from models.overtime_model import OvertimeModel
+        
+        selected_rows = self.overtime_table.selectionModel().selectedRows()
+        
+        if not selected_rows:
+            show_warning(self, "No Selection", "Please select an overtime request to approve.")
+            return
+        
+        row = selected_rows[0].row()
+        ot_data = self.overtime_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        ot_id = ot_data.get('id')
+        employee_name = self.overtime_table.item(row, 1).text()
+        hours = ot_data.get('hours_requested', 0)
+        ot_date = ot_data.get('request_date')
+        status = self.overtime_table.item(row, 6).text()
+        
+        if status != 'Pending':
+            show_warning(self, "Invalid Action", f"This overtime request has already been {status.lower()}.")
+            return
+        
+        # Confirmation dialog
+        if show_question(self, "Approve Overtime", f"Approve overtime request for {employee_name}?\n\nDate: {ot_date}\nHours: {hours}"):
+            admin_employee_id = self.user_data.get('employee_id')
+            if OvertimeModel.approve_request(ot_id, admin_employee_id):
+                show_info(self, "Success", f"Overtime request approved for {employee_name}.")
+                self.load_overtime_data()
+                self.load_statistics()  # Refresh statistics
+            else:
+                show_error(self, "Error", "Failed to approve overtime request.")
+    
+    def reject_selected_overtime(self):
+        """Reject the selected overtime request"""
+        from models.overtime_model import OvertimeModel
+        
+        selected_rows = self.overtime_table.selectionModel().selectedRows()
+        
+        if not selected_rows:
+            show_warning(self, "No Selection", "Please select an overtime request to reject.")
+            return
+        
+        row = selected_rows[0].row()
+        ot_data = self.overtime_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        ot_id = ot_data.get('id')
+        employee_name = self.overtime_table.item(row, 1).text()
+        status = self.overtime_table.item(row, 6).text()
+        
+        if status != 'Pending':
+            show_warning(self, "Invalid Action", f"This overtime request has already been {status.lower()}.")
+            return
+        
+        # Ask for rejection reason
+        from PyQt6.QtWidgets import QInputDialog
+        remarks, ok = QInputDialog.getText(
+            self,
+            "Reject Overtime",
+            f"Reject overtime request for {employee_name}?\n\nReason (optional):"
+        )
+        
+        if ok:
+            admin_employee_id = self.user_data.get('employee_id')
+            if OvertimeModel.reject_request(ot_id, admin_employee_id, remarks if remarks else None):
+                show_info(self, "Success", f"Overtime request rejected for {employee_name}.")
+                self.load_overtime_data()
+                self.load_statistics()  # Refresh statistics
+            else:
+                show_error(self, "Error", "Failed to reject overtime request.")
+    
+    def show_overtime_details(self):
+        """Show detailed information about the selected overtime request"""
+        selected_rows = self.overtime_table.selectionModel().selectedRows()
+        
+        if not selected_rows:
+            return
+        
+        row = selected_rows[0].row()
+        ot_data = self.overtime_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        
+        if not ot_data:
+            return
+        
+        # Create detail dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Overtime Request Details")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(600)
+        
+        layout = QVBoxLayout()
+        
+        # Status header with color
+        status = ot_data.get('status', 'N/A')
+        if status == 'Approved':
+            status_color = "#10B981"
+            status_bg = "#D1FAE5"
+        elif status == 'Rejected':
+            status_color = "#EF4444"
+            status_bg = "#FEE2E2"
+        else:  # Pending
+            status_color = "#F59E0B"
+            status_bg = "#FEF3C7"
+        
+        status_label = QLabel(f"<h2 style='color: {status_color};'>Status: {status}</h2>")
+        status_label.setStyleSheet(f"padding: 15px; background-color: {status_bg}; border-radius: 5px;")
+        status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(status_label)
+        
+        # Employee information
+        employee_info = QLabel(
+            f"<h3>Employee Information</h3>"
+            f"<table style='width: 100%;'>"
+            f"<tr><td><b>Employee Code:</b></td><td>{ot_data.get('employee_code', 'N/A')}</td></tr>"
+            f"<tr><td><b>Name:</b></td><td>{ot_data.get('full_name', 'N/A')}</td></tr>"
+            f"<tr><td><b>Department:</b></td><td>{ot_data.get('department', 'N/A')}</td></tr>"
+            f"</table>"
+        )
+        employee_info.setWordWrap(True)
+        employee_info.setStyleSheet("padding: 15px; background-color: #F3F4F6; border-radius: 5px;")
+        layout.addWidget(employee_info)
+        
+        # Overtime details
+        ot_info = QLabel(
+            f"<h3>Overtime Details</h3>"
+            f"<table style='width: 100%;'>"
+            f"<tr><td><b>Overtime Date:</b></td><td>{ot_data.get('request_date', 'N/A')}</td></tr>"
+            f"<tr><td><b>Hours Requested:</b></td><td style='font-weight: bold; color: #F59E0B;'>{ot_data.get('hours_requested', 0):.1f} hour(s)</td></tr>"
+            f"<tr><td><b>Requested On:</b></td><td>{ot_data.get('created_at', 'N/A')}</td></tr>"
+            f"</table>"
+        )
+        ot_info.setWordWrap(True)
+        ot_info.setStyleSheet("padding: 15px; background-color: #FEF3C7; border-radius: 5px;")
+        layout.addWidget(ot_info)
+        
+        # Reason
+        reason_label = QLabel("<h3>Reason</h3>")
+        layout.addWidget(reason_label)
+        
+        reason_text = QLabel(f"<p>{ot_data.get('reason', 'No reason provided.')}</p>")
+        reason_text.setWordWrap(True)
+        reason_text.setStyleSheet("padding: 15px; background-color: #FFFBEB; border-radius: 5px; border: 1px solid #FCD34D;")
+        layout.addWidget(reason_text)
+        
+        # Review information (if approved/rejected)
+        if ot_data.get('reviewed_at'):
+            actual_ot = ot_data.get('actual_overtime')
+            actual_text = f"{actual_ot:.1f} hour(s)" if actual_ot else "Not yet recorded"
+            review_info = QLabel(
+                f"<h3>Review Information</h3>"
+                f"<table style='width: 100%;'>"
+                f"<tr><td><b>Reviewed On:</b></td><td>{ot_data.get('reviewed_at', 'N/A')}</td></tr>"
+                f"<tr><td><b>Reviewed By:</b></td><td>{ot_data.get('reviewer_name', 'N/A')}</td></tr>"
+                f"<tr><td><b>Remarks:</b></td><td>{ot_data.get('remarks', 'No remarks')}</td></tr>"
+                f"<tr><td><b>Actual OT Worked:</b></td><td>{actual_text}</td></tr>"
+                f"</table>"
+            )
+            review_info.setWordWrap(True)
+            review_info.setStyleSheet("padding: 15px; background-color: #F9FAFB; border-radius: 5px;")
+            layout.addWidget(review_info)
+        
+        # Close button
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        close_btn = QPushButton("Close")
+        close_btn.setStyleSheet(self.get_button_style("#5A8AC4"))
+        close_btn.clicked.connect(dialog.accept)
+        button_layout.addWidget(close_btn)
+        
+        layout.addLayout(button_layout)
+        dialog.setLayout(layout)
+        
+        dialog.exec()
+
+    # ===== SHIFT MANAGEMENT METHODS =====
+    
+    def load_shifts_data(self):
+        """Load shifts table data"""
+        shifts = ShiftModel.get_all_shifts()
+        
+        self.shifts_table.setRowCount(len(shifts))
+        
+        for row, shift in enumerate(shifts):
+            # Shift name
+            name = shift.get('shift_name', '-')
+            self.shifts_table.setItem(row, 0, QTableWidgetItem(name))
+            
+            # Format times
+            self.shifts_table.setItem(row, 1, QTableWidgetItem(self.format_shift_time(shift.get('start_time'))))
+            self.shifts_table.setItem(row, 2, QTableWidgetItem(self.format_shift_time(shift.get('end_time'))))
+            self.shifts_table.setItem(row, 3, QTableWidgetItem(f"{shift.get('work_hours', 8):.1f} hrs"))
+            self.shifts_table.setItem(row, 4, QTableWidgetItem(f"{shift.get('grace_period_mins', 15)} mins"))
+            self.shifts_table.setItem(row, 5, QTableWidgetItem(f"{shift.get('min_hours_before_lunch', 3):.1f} hrs"))
+            
+            # Employee count
+            emp_count = ShiftModel.get_employees_count_by_shift(shift.get('id'))
+            self.shifts_table.setItem(row, 6, QTableWidgetItem(str(emp_count)))
+    
+    def format_shift_time(self, time_val):
+        """Format time for display"""
+        if not time_val:
+            return "-"
+        
+        from datetime import timedelta
+        
+        if isinstance(time_val, timedelta):
+            total_seconds = int(time_val.total_seconds())
+            hours = total_seconds // 3600
+            minutes = (total_seconds % 3600) // 60
+            time_str = f"{hours:02d}:{minutes:02d}:00"
+        else:
+            time_str = str(time_val)
+        
+        try:
+            time_obj = datetime.strptime(time_str, '%H:%M:%S')
+            return time_obj.strftime('%I:%M %p').lstrip('0')
+        except:
+            return str(time_val)
+    
+    def show_add_shift_dialog(self):
+        """Show dialog to add a new shift"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add New Shift")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(450)
+        
+        layout = QVBoxLayout()
+        layout.setSpacing(15)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Title
+        title = QLabel("Create New Shift")
+        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #333440;")
+        layout.addWidget(title)
+        
+        # Form
+        form_layout = QFormLayout()
+        form_layout.setSpacing(10)
+        
+        name_input = QLineEdit()
+        name_input.setPlaceholderText("e.g., Regular, Morning, Night")
+        form_layout.addRow("Shift Name*:", name_input)
+        
+        start_time_input = QLineEdit()
+        start_time_input.setPlaceholderText("HH:MM (e.g., 08:00)")
+        form_layout.addRow("Start Time*:", start_time_input)
+        
+        end_time_input = QLineEdit()
+        end_time_input.setPlaceholderText("HH:MM (e.g., 17:00)")
+        form_layout.addRow("End Time*:", end_time_input)
+        
+        work_hours_input = QLineEdit()
+        work_hours_input.setText("8")
+        form_layout.addRow("Work Hours:", work_hours_input)
+        
+        grace_period_input = QLineEdit()
+        grace_period_input.setText("15")
+        form_layout.addRow("Grace Period (mins):", grace_period_input)
+        
+        min_lunch_input = QLineEdit()
+        min_lunch_input.setText("3")
+        form_layout.addRow("Min Hours Before Lunch:", min_lunch_input)
+        
+        from PyQt6.QtWidgets import QCheckBox
+        default_checkbox = QCheckBox("Set as default shift")
+        form_layout.addRow("", default_checkbox)
+        
+        layout.addLayout(form_layout)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet(self.get_button_style("#687280"))
+        cancel_btn.clicked.connect(dialog.reject)
+        button_layout.addWidget(cancel_btn)
+        
+        save_btn = QPushButton("Create Shift")
+        save_btn.setStyleSheet(self.get_button_style("#5A8AC4"))
+        
+        def save_shift():
+            name = name_input.text().strip()
+            start_time = start_time_input.text().strip()
+            end_time = end_time_input.text().strip()
+            
+            if not name or not start_time or not end_time:
+                show_warning(self, "Validation Error", "Please fill in all required fields.")
+                return
+            
+            # Add seconds if not present
+            if len(start_time) == 5:
+                start_time += ":00"
+            if len(end_time) == 5:
+                end_time += ":00"
+            
+            try:
+                work_hours = float(work_hours_input.text() or 8)
+                grace_period = int(grace_period_input.text() or 15)
+                min_lunch = float(min_lunch_input.text() or 3)
+            except ValueError:
+                show_warning(self, "Validation Error", "Please enter valid numbers for hours and minutes.")
+                return
+            
+            shift_id = ShiftModel.create_shift(
+                name, start_time, end_time, work_hours,
+                grace_period, min_lunch, default_checkbox.isChecked()
+            )
+            
+            if shift_id:
+                show_info(self, "Success", f"Shift '{name}' created successfully!")
+                self.load_shifts_data()
+                dialog.accept()
+            else:
+                show_error(self, "Error", "Failed to create shift.")
+        
+        save_btn.clicked.connect(save_shift)
+        button_layout.addWidget(save_btn)
+        
+        layout.addLayout(button_layout)
+        dialog.setLayout(layout)
+        dialog.exec()
+    
+    def edit_selected_shift(self):
+        """Edit selected shift"""
+        selected_rows = self.shifts_table.selectionModel().selectedRows()
+        if not selected_rows:
+            show_warning(self, "No Selection", "Please select a shift to edit.")
+            return
+        
+        row = selected_rows[0].row()
+        shift_name = self.shifts_table.item(row, 0).text().replace(" ⭐", "")
+        
+        # Get shift data
+        shifts = ShiftModel.get_all_shifts()
+        shift = next((s for s in shifts if s['shift_name'] == shift_name), None)
+        
+        if not shift:
+            show_error(self, "Error", "Could not find shift data.")
+            return
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Edit Shift")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(450)
+        
+        layout = QVBoxLayout()
+        layout.setSpacing(15)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        title = QLabel(f"Edit Shift: {shift_name}")
+        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #333440;")
+        layout.addWidget(title)
+        
+        form_layout = QFormLayout()
+        form_layout.setSpacing(10)
+        
+        name_input = QLineEdit()
+        name_input.setText(shift['shift_name'])
+        form_layout.addRow("Shift Name*:", name_input)
+        
+        start_time_input = QLineEdit()
+        start_time_input.setText(self.format_time_for_input(shift['start_time']))
+        form_layout.addRow("Start Time*:", start_time_input)
+        
+        end_time_input = QLineEdit()
+        end_time_input.setText(self.format_time_for_input(shift['end_time']))
+        form_layout.addRow("End Time*:", end_time_input)
+        
+        work_hours_input = QLineEdit()
+        work_hours_input.setText(str(shift.get('work_hours', 8)))
+        form_layout.addRow("Work Hours:", work_hours_input)
+        
+        grace_period_input = QLineEdit()
+        grace_period_input.setText(str(shift.get('grace_period_mins', 15)))
+        form_layout.addRow("Grace Period (mins):", grace_period_input)
+        
+        min_lunch_input = QLineEdit()
+        min_lunch_input.setText(str(shift.get('min_hours_before_lunch', 3)))
+        form_layout.addRow("Min Hours Before Lunch:", min_lunch_input)
+        
+        from PyQt6.QtWidgets import QCheckBox
+        default_checkbox = QCheckBox("Set as default shift")
+        default_checkbox.setChecked(shift.get('is_default', False))
+        form_layout.addRow("", default_checkbox)
+        
+        layout.addLayout(form_layout)
+        
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet(self.get_button_style("#687280"))
+        cancel_btn.clicked.connect(dialog.reject)
+        button_layout.addWidget(cancel_btn)
+        
+        save_btn = QPushButton("Save Changes")
+        save_btn.setStyleSheet(self.get_button_style("#5A8AC4"))
+        
+        def update_shift():
+            name = name_input.text().strip()
+            start_time = start_time_input.text().strip()
+            end_time = end_time_input.text().strip()
+            
+            if not name or not start_time or not end_time:
+                show_warning(self, "Validation Error", "Please fill in all required fields.")
+                return
+            
+            if len(start_time) == 5:
+                start_time += ":00"
+            if len(end_time) == 5:
+                end_time += ":00"
+            
+            try:
+                work_hours = float(work_hours_input.text() or 8)
+                grace_period = int(grace_period_input.text() or 15)
+                min_lunch = float(min_lunch_input.text() or 3)
+            except ValueError:
+                show_warning(self, "Validation Error", "Please enter valid numbers.")
+                return
+            
+            success = ShiftModel.update_shift(
+                shift['id'], name, start_time, end_time, work_hours,
+                grace_period, min_lunch, default_checkbox.isChecked()
+            )
+            
+            if success:
+                show_info(self, "Success", f"Shift '{name}' updated successfully!")
+                self.load_shifts_data()
+                dialog.accept()
+            else:
+                show_error(self, "Error", "Failed to update shift.")
+        
+        save_btn.clicked.connect(update_shift)
+        button_layout.addWidget(save_btn)
+        
+        layout.addLayout(button_layout)
+        dialog.setLayout(layout)
+        dialog.exec()
+    
+    def format_time_for_input(self, time_val):
+        """Format time for input field (HH:MM)"""
+        if not time_val:
+            return ""
+        
+        from datetime import timedelta
+        
+        if isinstance(time_val, timedelta):
+            total_seconds = int(time_val.total_seconds())
+            hours = total_seconds // 3600
+            minutes = (total_seconds % 3600) // 60
+            return f"{hours:02d}:{minutes:02d}"
+        
+        return str(time_val)[:5]
+    
+    def delete_selected_shift(self):
+        """Delete selected shift"""
+        selected_rows = self.shifts_table.selectionModel().selectedRows()
+        if not selected_rows:
+            show_warning(self, "No Selection", "Please select a shift to delete.")
+            return
+        
+        row = selected_rows[0].row()
+        shift_name = self.shifts_table.item(row, 0).text()
+        emp_count = self.shifts_table.item(row, 6).text()
+        
+        # Get shift data
+        shifts = ShiftModel.get_all_shifts()
+        shift = next((s for s in shifts if s['shift_name'] == shift_name), None)
+        
+        if not shift:
+            show_error(self, "Error", "Could not find shift data.")
+            return
+        
+        if shift.get('is_default'):
+            show_warning(self, "Cannot Delete", "You cannot delete the default shift.")
+            return
+        
+        if int(emp_count) > 0:
+            show_warning(
+                self, 
+                "Cannot Delete", 
+                f"This shift has {emp_count} employee(s) assigned.\n"
+                "Please reassign them to another shift first."
+            )
+            return
+        
+        if show_question(self, "Confirm Delete", f"Are you sure you want to delete '{shift_name}'?"):
+            if ShiftModel.delete_shift(shift['id']):
+                show_info(self, "Success", f"Shift '{shift_name}' deleted successfully!")
+                self.load_shifts_data()
+            else:
+                show_error(self, "Error", "Failed to delete shift.")

@@ -1,0 +1,236 @@
+"""
+Login View
+PyQt6 login screen with logo integration
+"""
+
+import os
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
+    QLineEdit, QPushButton, QMessageBox
+)
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QPixmap, QIcon
+
+
+class PasswordLineEdit(QWidget):
+    """Custom password input with reveal toggle button"""
+    
+    def __init__(self, placeholder="Enter your password"):
+        super().__init__()
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # Password input
+        self.password_input = QLineEdit()
+        self.password_input.setPlaceholderText(placeholder)
+        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password_input.setMinimumHeight(40)
+        self.password_input.setStyleSheet("""
+            QLineEdit {
+                padding: 10px 40px 10px 12px;
+                font-size: 13px;
+                border: 1px solid #CCCCCC;
+                border-radius: 4px;
+                background-color: white;
+            }
+            QLineEdit:focus {
+                border: 1px solid #5A8AC4;
+            }
+        """)
+        
+        # Toggle button
+        self.toggle_btn = QPushButton("👁")
+        self.toggle_btn.setFixedSize(35, 35)
+        self.toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: none;
+                font-size: 14px;
+                color: #687280;
+            }
+            QPushButton:hover {
+                color: #5A8AC4;
+            }
+        """)
+        self.toggle_btn.clicked.connect(self.toggle_password_visibility)
+        self.is_visible = False
+        
+        layout.addWidget(self.password_input)
+        
+        # Overlay toggle button
+        self.toggle_btn.setParent(self.password_input)
+        self.toggle_btn.move(self.password_input.width() - 40, 2)
+        
+        self.setLayout(layout)
+    
+    def resizeEvent(self, event):
+        """Reposition toggle button on resize"""
+        super().resizeEvent(event)
+        self.toggle_btn.move(self.password_input.width() - 40, 2)
+    
+    def toggle_password_visibility(self):
+        """Toggle between showing and hiding password"""
+        self.is_visible = not self.is_visible
+        if self.is_visible:
+            self.password_input.setEchoMode(QLineEdit.EchoMode.Normal)
+            self.toggle_btn.setText("🙈")
+        else:
+            self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+            self.toggle_btn.setText("👁")
+    
+    def text(self):
+        """Get password text"""
+        return self.password_input.text()
+    
+    def clear(self):
+        """Clear password input"""
+        self.password_input.clear()
+    
+    def setFocus(self):
+        """Set focus to password input"""
+        self.password_input.setFocus()
+
+
+class LoginView(QWidget):
+    """Login screen view"""
+    
+    # Signal emitted when login is successful
+    login_successful = pyqtSignal(dict, str)  # (user_data, role)
+    
+    def __init__(self):
+        """Initialize login view"""
+        super().__init__()
+        self.init_ui()
+    
+    def init_ui(self):
+        """Initialize user interface"""
+        self.setWindowTitle("Work Log - Employee Attendance System")
+        self.setFixedSize(400, 520)
+        
+        # Main layout
+        main_layout = QVBoxLayout()
+        main_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        main_layout.setSpacing(15)
+        main_layout.setContentsMargins(40, 35, 40, 35)
+        
+        # ===== LOGO SECTION =====
+        logo_label = QLabel()
+        logo_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 
+                                 'assets', 'logo.png')
+        
+        if os.path.exists(logo_path):
+            pixmap = QPixmap(logo_path)
+            scaled_pixmap = pixmap.scaled(
+                100, 100, 
+                Qt.AspectRatioMode.KeepAspectRatio, 
+                Qt.TransformationMode.SmoothTransformation
+            )
+            logo_label.setPixmap(scaled_pixmap)
+        else:
+            logo_label.setText("WORK LOG")
+            logo_label.setStyleSheet("font-size: 28px; font-weight: bold; color: #5A8AC4;")
+        
+        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        main_layout.addWidget(logo_label)
+        
+        # Title
+        title_label = QLabel("Work Log")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_label.setStyleSheet("font-size: 14px; color: #666666;")
+        main_layout.addWidget(title_label)
+        
+        # Add spacing before form
+        main_layout.addSpacing(20)
+        
+        # Username input
+        username_label = QLabel("Username")
+        username_label.setStyleSheet("font-size: 13px; color: #333333; font-weight: bold;")
+        main_layout.addWidget(username_label)
+        
+        self.username_input = QLineEdit()
+        self.username_input.setPlaceholderText("Enter your username")
+        self.username_input.setMinimumHeight(40)
+        self.username_input.setStyleSheet("""
+            QLineEdit {
+                padding: 10px 12px;
+                font-size: 13px;
+                border: 1px solid #CCCCCC;
+                border-radius: 4px;
+                background-color: white;
+                selection-background-color: transparent;
+                selection-color: #333333;
+            }
+            QLineEdit:focus {
+                border: 1px solid #5A8AC4;
+            }
+        """)
+        main_layout.addWidget(self.username_input)
+        
+        # Password input
+        password_label = QLabel("Password")
+        password_label.setStyleSheet("font-size: 13px; color: #333333; font-weight: bold;")
+        main_layout.addWidget(password_label)
+        
+        # Password field with reveal toggle
+        self.password_widget = PasswordLineEdit("Enter your password")
+        self.password_input = self.password_widget.password_input  # For compatibility
+        main_layout.addWidget(self.password_widget)
+        
+        # Add spacing before button
+        main_layout.addSpacing(15)
+        
+        # Login button
+        self.login_button = QPushButton("Login")
+        self.login_button.setMinimumHeight(42)
+        self.login_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.login_button.setStyleSheet("""
+            QPushButton {
+                background-color: #5A8AC4;
+                color: white;
+                font-size: 14px;
+                font-weight: bold;
+                border: none;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #4A7AB4;
+            }
+            QPushButton:pressed {
+                background-color: #3A6AA4;
+            }
+        """)
+        self.login_button.clicked.connect(self.handle_login)
+        main_layout.addWidget(self.login_button)
+        
+        # Allow Enter key to trigger login
+        self.password_input.returnPressed.connect(self.handle_login)
+        
+        # Set main layout
+        self.setLayout(main_layout)
+        
+        # Apply clean window background
+        self.setStyleSheet("QWidget { background-color: #F5F5F5; }")
+    
+    def handle_login(self):
+        """Handle login button click"""
+        from controllers.login_controller import LoginController
+        
+        # Get input values
+        username = self.username_input.text().strip()
+        password = self.password_widget.text()
+        
+        # Create controller and authenticate
+        controller = LoginController(self)
+        user = controller.authenticate(username, password)
+        
+        if user:
+            # Emit signal with user data and role (role comes from database)
+            self.login_successful.emit(user, user['role'])
+            self.close()
+    
+    def clear_inputs(self):
+        """Clear all input fields"""
+        self.username_input.clear()
+        self.password_widget.clear()

@@ -1,0 +1,914 @@
+"""
+Staff Dashboard View
+PyQt6 staff dashboard with attendance controls and personal records
+"""
+
+import os
+from datetime import datetime
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
+    QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, QDialog,
+    QMessageBox, QDateEdit, QComboBox, QFormLayout
+)
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QDate
+from PyQt6.QtGui import QPixmap
+from controllers.attendance_controller import AttendanceController
+from controllers.staff_dashboard_controller import StaffDashboardController
+from views.user_account_view import ChangePasswordDialog
+from utils.message_box import show_info, show_warning, show_error
+from models.shift_model import ShiftModel
+
+
+class StaffDashboardView(QWidget):
+    """Staff dashboard view"""
+    
+    # Signal emitted when dashboard is closed
+    finished = pyqtSignal()
+    
+    def __init__(self, user_data):
+        """
+        Initialize staff dashboard
+        
+        Args:
+            user_data: Logged-in user information
+        """
+        super().__init__()
+        self.user_data = user_data
+        self.employee_id = user_data['employee_id']
+        
+        # Initialize controllers
+        self.attendance_controller = AttendanceController(self.employee_id)
+        self.dashboard_controller = StaffDashboardController(self.employee_id)
+        
+        self.init_ui()
+        self.load_data()
+        
+        # Setup timer for real-time clock
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_clock)
+        self.timer.start(1000)  # Update every second
+    
+    def init_ui(self):
+        """Initialize user interface"""
+        self.setWindowTitle("Work Log - Staff Dashboard")
+        self.setMinimumSize(1000, 700)
+        
+        # Main layout
+        main_layout = QVBoxLayout()
+        main_layout.setSpacing(15)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        
+        # ===== HEADER SECTION WITH LOGO =====
+        header_layout = QHBoxLayout()
+        
+        # Logo (top left)
+        logo_label = QLabel()
+        logo_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 
+                                 'assets', 'logo.png')
+        
+        if os.path.exists(logo_path):
+            pixmap = QPixmap(logo_path)
+            scaled_pixmap = pixmap.scaled(
+                50, 50, 
+                Qt.AspectRatioMode.KeepAspectRatio, 
+                Qt.TransformationMode.SmoothTransformation
+            )
+            logo_label.setPixmap(scaled_pixmap)
+        else:
+            logo_label.setText("WL")
+            logo_label.setStyleSheet("font-size: 20px; font-weight: bold; color: white;")
+        
+        header_layout.addWidget(logo_label)
+        
+        # Header title
+        header_title = QLabel("Staff Dashboard")
+        header_title.setStyleSheet("font-size: 20px; font-weight: bold; color: white;")
+        header_layout.addWidget(header_title)
+        
+        header_layout.addStretch()
+        
+        # User info and shift
+        user_info_layout = QVBoxLayout()
+        user_info_layout.setSpacing(2)
+        
+        user_info = QLabel(f"Welcome, {self.user_data['full_name']}")
+        user_info.setStyleSheet("font-size: 13px; color: white;")
+        user_info_layout.addWidget(user_info)
+        
+        # Get and display shift info
+        shift = ShiftModel.get_employee_shift(self.user_data['employee_id'])
+        if shift:
+            shift_display = ShiftModel.format_shift_display(shift)
+            shift_label = QLabel(f"📅 {shift_display}")
+            shift_label.setStyleSheet("font-size: 11px; color: #B3D4FF;")
+            user_info_layout.addWidget(shift_label)
+        
+        header_layout.addLayout(user_info_layout)
+        
+        # Change Password button
+        change_pwd_btn = QPushButton("🔐 Change Password")
+        change_pwd_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        change_pwd_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4A7AB4;
+                color: white;
+                padding: 8px 12px;
+                font-size: 12px;
+                font-weight: bold;
+                border: none;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #3A6AA4;
+            }
+        """)
+        change_pwd_btn.clicked.connect(self.show_change_password_dialog)
+        header_layout.addWidget(change_pwd_btn)
+        
+        # Logout button
+        logout_btn = QPushButton("Logout")
+        logout_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        logout_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FC4A5A;
+                color: white;
+                padding: 8px 16px;
+                font-size: 12px;
+                font-weight: bold;
+                border: none;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #E03A4A;
+            }
+        """)
+        logout_btn.clicked.connect(self.handle_logout)
+        header_layout.addWidget(logout_btn)
+        
+        # Header container
+        header_container = QWidget()
+        header_container.setLayout(header_layout)
+        header_container.setStyleSheet("background-color: #5A8AC4; padding: 12px 20px; border-radius: 8px;")
+        main_layout.addWidget(header_container)
+        
+        # ===== DATE AND TIME SECTION =====
+        datetime_layout = QHBoxLayout()
+        
+        self.date_label = QLabel()
+        self.date_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #333333;")
+        datetime_layout.addWidget(self.date_label)
+        
+        datetime_layout.addStretch()
+        
+        self.clock_label = QLabel()
+        self.clock_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #5A8AC4;")
+        datetime_layout.addWidget(self.clock_label)
+        
+        main_layout.addLayout(datetime_layout)
+        
+        # Update date and clock
+        self.update_clock()
+        
+        # ===== PERSONAL STATISTICS CARDS =====
+        stats_layout = QHBoxLayout()
+        stats_layout.setSpacing(12)
+        
+        # Checked In card
+        self.present_label = QLabel("No")
+        present_card = self.create_stat_card("Checked In", self.present_label, "#89E4F7")
+        stats_layout.addWidget(present_card)
+        
+        # Status card
+        self.late_label = QLabel("N/A")
+        late_card = self.create_stat_card("Status", self.late_label, "#FFD107")
+        stats_layout.addWidget(late_card)
+        
+        # Paid Hours card
+        self.absent_label = QLabel("0.00")
+        absent_card = self.create_stat_card("Paid Hours", self.absent_label, "#5A8AC4")
+        stats_layout.addWidget(absent_card)
+        
+        main_layout.addLayout(stats_layout)
+        
+        # ===== ATTENDANCE BUTTONS =====
+        buttons_layout = QHBoxLayout()
+        buttons_layout.setSpacing(10)
+        
+        self.checkin_btn = QPushButton("Check In")
+        self.checkin_btn.setStyleSheet(self.get_button_style("#89E4F7"))
+        self.checkin_btn.clicked.connect(self.handle_check_in)
+        buttons_layout.addWidget(self.checkin_btn)
+        
+        self.lunch_start_btn = QPushButton("Start Lunch")
+        self.lunch_start_btn.setStyleSheet(self.get_button_style("#FFD107"))
+        self.lunch_start_btn.clicked.connect(self.handle_start_lunch)
+        buttons_layout.addWidget(self.lunch_start_btn)
+        
+        self.lunch_end_btn = QPushButton("End Lunch")
+        self.lunch_end_btn.setStyleSheet(self.get_button_style("#FFD107"))
+        self.lunch_end_btn.clicked.connect(self.handle_end_lunch)
+        buttons_layout.addWidget(self.lunch_end_btn)
+        
+        self.checkout_btn = QPushButton("Check Out")
+        self.checkout_btn.setStyleSheet(self.get_button_style("#5A8AC4"))
+        self.checkout_btn.clicked.connect(self.handle_check_out)
+        buttons_layout.addWidget(self.checkout_btn)
+        
+        # Add some spacing
+        buttons_layout.addStretch()
+        
+        # Request Overtime button
+        request_overtime_btn = QPushButton("Request Overtime")
+        request_overtime_btn.setStyleSheet(self.get_button_style("#F59E0B"))
+        request_overtime_btn.clicked.connect(self.show_request_overtime_dialog)
+        buttons_layout.addWidget(request_overtime_btn)
+        
+        # Request Leave button
+        request_leave_btn = QPushButton("Request Leave")
+        request_leave_btn.setStyleSheet(self.get_button_style("#9CA3AF"))
+        request_leave_btn.clicked.connect(self.show_request_leave_dialog)
+        buttons_layout.addWidget(request_leave_btn)
+        
+        main_layout.addLayout(buttons_layout)
+        
+        # ===== ATTENDANCE RECORDS TABLE =====
+        table_label = QLabel("My Attendance Records")
+        table_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #333333;")
+        main_layout.addWidget(table_label)
+        
+        self.attendance_table = QTableWidget()
+        self.attendance_table.setColumnCount(5)
+        self.attendance_table.setHorizontalHeaderLabels([
+            "Date", "Time In", "Time Out", "Paid Hours", "Status"
+        ])
+        
+        # Table styling
+        self.attendance_table.setStyleSheet("""
+            QTableWidget {
+                background-color: white;
+                border: 1px solid #DDDDDD;
+                border-radius: 4px;
+            }
+            QTableWidget::item {
+                padding: 6px;
+            }
+            QTableWidget::item:selected {
+                background-color: #E3F2FD;
+                color: #333333;
+            }
+            QHeaderView::section {
+                background-color: #5A8AC4;
+                color: white;
+                padding: 10px 8px;
+                font-weight: bold;
+                font-size: 12px;
+                border: none;
+            }
+        """)
+        
+        # Set column widths
+        header = self.attendance_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        
+        main_layout.addWidget(self.attendance_table)
+        
+        # Set main layout
+        self.setLayout(main_layout)
+        
+        # Apply window background
+        self.setStyleSheet("QWidget { background-color: #F5F5F5; }")
+    
+    def create_stat_card(self, title, value_label, color):
+        """Create a statistics card widget"""
+        card = QWidget()
+        card_layout = QVBoxLayout()
+        card_layout.setSpacing(5)
+        card_layout.setContentsMargins(15, 15, 15, 15)
+        
+        # Value (large text on top)
+        value_label.setStyleSheet("border: none; background: transparent;")
+        value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_layout.addWidget(value_label)
+        
+        # Title (small text at bottom)
+        title_label = QLabel(title)
+        title_label.setStyleSheet(
+            "font-size: 11px; "
+            "color: #888888; "
+            "border: none; "
+            "background: transparent;"
+        )
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_layout.addWidget(title_label)
+        
+        card.setLayout(card_layout)
+        card.setStyleSheet(
+            f"QWidget#statCard {{"
+            f"  background-color: white;"
+            f"  border-radius: 6px;"
+            f"  border: 1px solid #DDDDDD;"
+            f"  border-left: 3px solid {color};"
+            f"}}"
+            f"QWidget#statCard QLabel {{"
+            f"  border: none;"
+            f"  background: transparent;"
+            f"}}"
+        )
+        card.setObjectName("statCard")
+        
+        return card
+    
+    def get_button_style(self, color):
+        """Get button stylesheet with specified color"""
+        # Determine text color based on background
+        if color == "#FFD107":  # Yellow warning button
+            text_color = "#333333"  # Dark text
+        else:
+            text_color = "white"
+        return f"""
+            QPushButton {{
+                background-color: {color};
+                color: {text_color};
+                padding: 10px 16px;
+                font-size: 12px;
+                font-weight: bold;
+                border: none;
+                border-radius: 4px;
+            }}
+            QPushButton:hover {{
+                opacity: 0.9;
+            }}
+            QPushButton:disabled {{
+                background-color: #D1D5DB;
+                color: #9CA3AF;
+            }}
+        """
+    
+    def update_button_states(self, today_record):
+        """
+        Update button enabled/disabled states based on attendance status
+        
+        Args:
+            today_record: Today's attendance record (or None if not checked in)
+        """
+        if not today_record:
+            # Not checked in yet
+            self.checkin_btn.setEnabled(True)
+            self.lunch_start_btn.setEnabled(False)
+            self.lunch_end_btn.setEnabled(False)
+            self.checkout_btn.setEnabled(False)
+        else:
+            # Already checked in
+            time_out = today_record.get('time_out')
+            lunch_start = today_record.get('lunch_start')
+            lunch_end = today_record.get('lunch_end')
+            
+            if time_out:
+                # Already checked out - disable all
+                self.checkin_btn.setEnabled(False)
+                self.lunch_start_btn.setEnabled(False)
+                self.lunch_end_btn.setEnabled(False)
+                self.checkout_btn.setEnabled(False)
+            elif lunch_start and not lunch_end:
+                # On lunch break
+                self.checkin_btn.setEnabled(False)
+                self.lunch_start_btn.setEnabled(False)
+                self.lunch_end_btn.setEnabled(True)
+                self.checkout_btn.setEnabled(False)
+            elif lunch_start and lunch_end:
+                # Lunch finished, can check out
+                self.checkin_btn.setEnabled(False)
+                self.lunch_start_btn.setEnabled(False)
+                self.lunch_end_btn.setEnabled(False)
+                self.checkout_btn.setEnabled(True)
+            else:
+                # Checked in, no lunch yet
+                self.checkin_btn.setEnabled(False)
+                self.lunch_start_btn.setEnabled(True)
+                self.lunch_end_btn.setEnabled(False)
+                self.checkout_btn.setEnabled(True)
+    
+    def update_clock(self):
+        """Update date and time display"""
+        now = datetime.now()
+        self.date_label.setText(now.strftime("%A, %B %d, %Y"))
+        self.clock_label.setText(now.strftime("%I:%M:%S %p"))
+    
+    def load_data(self):
+        """Load dashboard data"""
+        from models.attendance_model import AttendanceModel
+        
+        # Load personal attendance statistics
+        today_record = AttendanceModel.get_today_attendance(self.employee_id)
+        
+        if today_record:
+            # User has checked in
+            self.present_label.setText("Yes")
+            self.present_label.setStyleSheet(
+                "font-size: 24px; "
+                "font-weight: bold; "
+                "color: #10B981;"
+            )
+            
+            # Show status
+            status = today_record.get('status', 'N/A')
+            self.late_label.setText(status)
+            self.late_label.setWordWrap(False)
+            
+            if 'Late' in status:
+                self.late_label.setStyleSheet(
+                    "font-size: 24px; "
+                    "font-weight: bold; "
+                    "color: #F59E0B;"
+                )
+            else:
+                self.late_label.setStyleSheet(
+                    "font-size: 24px; "
+                    "font-weight: bold; "
+                    "color: #10B981;"
+                )
+            
+            # Show paid hours
+            paid_hours = today_record.get('paid_hours', 0)
+            if paid_hours:
+                self.absent_label.setText(f"{paid_hours:.2f}")
+            else:
+                self.absent_label.setText("0.00")
+            self.absent_label.setStyleSheet(
+                "font-size: 24px; "
+                "font-weight: bold; "
+                "color: #3B82F6;"
+            )
+        else:
+            # User has not checked in
+            self.present_label.setText("No")
+            self.present_label.setStyleSheet(
+                "font-size: 24px; "
+                "font-weight: bold; "
+                "color: #EF4444;"
+            )
+            self.late_label.setText("N/A")
+            self.late_label.setWordWrap(False)
+            self.late_label.setStyleSheet(
+                "font-size: 24px; "
+                "font-weight: bold; "
+                "color: #9CA3AF;"
+            )
+            self.absent_label.setText("0.00")
+            self.absent_label.setStyleSheet(
+                "font-size: 24px; "
+                "font-weight: bold; "
+                "color: #9CA3AF;"
+            )
+        
+        # Update button states based on attendance status
+        self.update_button_states(today_record)
+        
+        # Load attendance records
+        records = self.dashboard_controller.get_my_attendance_records()
+        self.populate_table(records)
+    
+    def populate_table(self, records):
+        """Populate attendance table"""
+        self.attendance_table.setRowCount(len(records))
+        
+        for row, record in enumerate(records):
+            self.attendance_table.setItem(row, 0, QTableWidgetItem(str(record.get('date', '-'))))
+            self.attendance_table.setItem(row, 1, QTableWidgetItem(
+                self.dashboard_controller.format_time(record.get('time_in'))
+            ))
+            self.attendance_table.setItem(row, 2, QTableWidgetItem(
+                self.dashboard_controller.format_time(record.get('time_out'))
+            ))
+            self.attendance_table.setItem(row, 3, QTableWidgetItem(
+                self.dashboard_controller.format_hours(record.get('paid_hours'))
+            ))
+            self.attendance_table.setItem(row, 4, QTableWidgetItem(str(record.get('status', '-'))))
+    
+    def handle_check_in(self):
+        """Handle check-in button click"""
+        if self.attendance_controller.check_in(self):
+            self.load_data()
+    
+    def handle_start_lunch(self):
+        """Handle start lunch button click"""
+        if self.attendance_controller.start_lunch(self):
+            self.load_data()
+    
+    def handle_end_lunch(self):
+        """Handle end lunch button click"""
+        if self.attendance_controller.end_lunch(self):
+            self.load_data()
+    
+    def handle_check_out(self):
+        """Handle check-out button click"""
+        if self.attendance_controller.check_out(self):
+            self.load_data()
+    
+    def show_change_password_dialog(self):
+        """Show change password dialog"""
+        dialog = ChangePasswordDialog(self.user_data, self)
+        dialog.exec()
+    
+    def handle_logout(self):
+        """Handle logout button click"""
+        # Check if user is currently checked in but not checked out
+        today_record = self.attendance_controller.get_today_record()
+        is_checked_in = today_record and today_record.get('time_in') and not today_record.get('time_out')
+        
+        # Create custom logout confirmation dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Confirm Logout")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(420)
+        
+        layout = QVBoxLayout()
+        
+        # Message - different if checked in
+        if is_checked_in:
+            message = QLabel(
+                "<h3>⚠️ You're Still Checked In!</h3>"
+                "<p>You haven't checked out yet. What would you like to do?</p>"
+            )
+        else:
+            message = QLabel(
+                "<h3>Confirm Logout</h3>"
+                "<p>Are you sure you want to logout?</p>"
+            )
+        message.setWordWrap(True)
+        message.setStyleSheet("padding: 20px;")
+        layout.addWidget(message)
+        
+        # Button layout
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        # Cancel button
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #687280;
+                color: white;
+                padding: 10px 20px;
+                font-size: 14px;
+                font-weight: bold;
+                border: none;
+                border-radius: 5px;
+                min-width: 100px;
+                min-height: 35px;
+            }
+            QPushButton:hover {
+                background-color: #586270;
+            }
+        """)
+        cancel_btn.clicked.connect(dialog.reject)
+        button_layout.addWidget(cancel_btn)
+        
+        if is_checked_in:
+            # Checkout & Logout button
+            checkout_btn = QPushButton("Check Out & Logout")
+            checkout_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #10B981;
+                    color: white;
+                    padding: 10px 20px;
+                    font-size: 14px;
+                    font-weight: bold;
+                    border: none;
+                    border-radius: 5px;
+                    min-width: 140px;
+                    min-height: 35px;
+                }
+                QPushButton:hover {
+                    background-color: #059669;
+                }
+            """)
+            checkout_btn.clicked.connect(lambda: self._checkout_and_logout(dialog))
+            button_layout.addWidget(checkout_btn)
+            
+            # Logout only button
+            logout_only_btn = QPushButton("Logout Only")
+            logout_only_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #F59E0B;
+                    color: white;
+                    padding: 10px 20px;
+                    font-size: 14px;
+                    font-weight: bold;
+                    border: none;
+                    border-radius: 5px;
+                    min-width: 100px;
+                    min-height: 35px;
+                }
+                QPushButton:hover {
+                    background-color: #D97706;
+                }
+            """)
+            logout_only_btn.clicked.connect(dialog.accept)
+            button_layout.addWidget(logout_only_btn)
+        else:
+            # Yes button (normal logout)
+            yes_btn = QPushButton("Yes, Logout")
+            yes_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #5A8AC4;
+                    color: white;
+                    padding: 10px 20px;
+                    font-size: 14px;
+                    font-weight: bold;
+                    border: none;
+                    border-radius: 5px;
+                    min-width: 120px;
+                    min-height: 35px;
+                }
+                QPushButton:hover {
+                    background-color: #4A7AB4;
+                }
+            """)
+            yes_btn.clicked.connect(dialog.accept)
+            button_layout.addWidget(yes_btn)
+        
+        layout.addLayout(button_layout)
+        dialog.setLayout(layout)
+        
+        # Show dialog and check result
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.finished.emit()
+            self.close()
+    
+    def _checkout_and_logout(self, dialog):
+        """Handle check out and then logout"""
+        # Perform checkout
+        if self.attendance_controller.check_out(self):
+            dialog.accept()  # This will trigger the logout
+        # If checkout fails, dialog stays open
+    
+    def show_request_leave_dialog(self):
+        """Show dialog to request leave"""
+        from PyQt6.QtWidgets import QTextEdit
+        from models.leave_model import LeaveModel
+        from models.employee_model import EmployeeModel
+        
+        # Get employee details to show leave credits
+        employee = EmployeeModel.get_employee_by_id(self.employee_id)
+        if not employee:
+            show_error(self, "Error", "Could not load employee information.")
+            return
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Request Leave")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(500)
+        
+        layout = QVBoxLayout()
+        
+        # Info section
+        info_label = QLabel(
+            f"<h3>Request Leave</h3>"
+            f"<p><b>Employee:</b> {employee.get('full_name')}<br>"
+            f"<b>Available Leave Credits:</b> {employee.get('leave_credits', 0)} days</p>"
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("padding: 10px; background-color: #E0F2FE; border-radius: 5px;")
+        layout.addWidget(info_label)
+        
+        # Form layout
+        form_layout = QFormLayout()
+        
+        # Leave type
+        leave_type_combo = QComboBox()
+        leave_type_combo.addItems(["Sick Leave", "Vacation Leave", "Emergency Leave", "Personal Leave"])
+        form_layout.addRow("Leave Type:", leave_type_combo)
+        
+        # Start date
+        start_date_edit = QDateEdit()
+        start_date_edit.setDate(QDate.currentDate())
+        start_date_edit.setCalendarPopup(True)
+        start_date_edit.setMinimumDate(QDate.currentDate())
+        form_layout.addRow("Start Date:", start_date_edit)
+        
+        # End date
+        end_date_edit = QDateEdit()
+        end_date_edit.setDate(QDate.currentDate())
+        end_date_edit.setCalendarPopup(True)
+        end_date_edit.setMinimumDate(QDate.currentDate())
+        form_layout.addRow("End Date:", end_date_edit)
+        
+        # Days count label (calculated automatically)
+        days_label = QLabel("1 day(s)")
+        days_label.setStyleSheet("font-weight: bold; color: #5A8AC4;")
+        form_layout.addRow("Total Days:", days_label)
+        
+        # Update days count when dates change
+        def update_days_count():
+            start = start_date_edit.date().toPyDate()
+            end = end_date_edit.date().toPyDate()
+            days = (end - start).days + 1
+            if days < 1:
+                days = 1
+                end_date_edit.setDate(start_date_edit.date())
+            days_label.setText(f"{days} day(s)")
+            
+            # Check if employee has enough credits
+            if days > employee.get('leave_credits', 0):
+                days_label.setStyleSheet("font-weight: bold; color: #EF4444;")
+                days_label.setText(f"{days} day(s) - Insufficient leave credits!")
+            else:
+                days_label.setStyleSheet("font-weight: bold; color: #5A8AC4;")
+        
+        start_date_edit.dateChanged.connect(update_days_count)
+        end_date_edit.dateChanged.connect(update_days_count)
+        
+        # Reason
+        reason_edit = QTextEdit()
+        reason_edit.setPlaceholderText("Enter reason for leave request...")
+        reason_edit.setMaximumHeight(100)
+        form_layout.addRow("Reason:", reason_edit)
+        
+        layout.addLayout(form_layout)
+        
+        # Button layout
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        # Cancel button
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet(self.get_button_style("#687280"))
+        cancel_btn.clicked.connect(dialog.reject)
+        button_layout.addWidget(cancel_btn)
+        
+        # Submit button
+        submit_btn = QPushButton("Submit Request")
+        submit_btn.setStyleSheet(self.get_button_style("#5A8AC4"))
+        
+        def submit_leave():
+            # Validate
+            start = start_date_edit.date().toPyDate()
+            end = end_date_edit.date().toPyDate()
+            days = (end - start).days + 1
+            reason = reason_edit.toPlainText().strip()
+            
+            if days < 1:
+                show_warning(dialog, "Invalid Dates", "End date must be on or after start date.")
+                return
+            
+            if days > employee.get('leave_credits', 0):
+                show_warning(
+                    dialog, 
+                    "Insufficient Credits", 
+                    f"You only have {employee.get('leave_credits', 0)} leave credits available."
+                )
+                return
+            
+            if not reason:
+                show_warning(dialog, "Missing Reason", "Please provide a reason for your leave request.")
+                return
+            
+            # Submit leave request
+            leave_type = leave_type_combo.currentText()
+            if LeaveModel.create_leave_request(self.employee_id, leave_type, start, end, reason):
+                show_info(
+                    dialog,
+                    "Success",
+                    f"Leave request submitted successfully!\n\n"
+                    f"Type: {leave_type}\n"
+                    f"Duration: {start} to {end} ({days} day(s))\n\n"
+                    f"Your request is pending admin approval."
+                )
+                dialog.accept()
+            else:
+                show_error(dialog, "Error", "Failed to submit leave request. Please try again.")
+        
+        submit_btn.clicked.connect(submit_leave)
+        button_layout.addWidget(submit_btn)
+        
+        layout.addLayout(button_layout)
+        dialog.setLayout(layout)
+        
+        dialog.exec()
+
+    def show_request_overtime_dialog(self):
+        """Show dialog to request overtime"""
+        from PyQt6.QtWidgets import QTextEdit, QSpinBox, QDoubleSpinBox
+        from models.overtime_model import OvertimeModel
+        from models.employee_model import EmployeeModel
+        
+        # Get employee details
+        employee = EmployeeModel.get_employee_by_id(self.employee_id)
+        if not employee:
+            show_error(self, "Error", "Could not load employee information.")
+            return
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Request Overtime")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(500)
+        
+        layout = QVBoxLayout()
+        
+        # Info section
+        info_label = QLabel(
+            f"<h3>Request Overtime</h3>"
+            f"<p><b>Employee:</b> {employee.get('full_name')}<br>"
+            f"<b>Department:</b> {employee.get('department')}</p>"
+            f"<p style='color: #666;'>Overtime requires pre-approval. Please submit your request "
+            f"before working extra hours.</p>"
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("padding: 10px; background-color: #FEF3C7; border-radius: 5px;")
+        layout.addWidget(info_label)
+        
+        # Form layout
+        form_layout = QFormLayout()
+        
+        # Date for overtime
+        overtime_date_edit = QDateEdit()
+        overtime_date_edit.setDate(QDate.currentDate())
+        overtime_date_edit.setCalendarPopup(True)
+        overtime_date_edit.setMinimumDate(QDate.currentDate())
+        form_layout.addRow("Overtime Date:", overtime_date_edit)
+        
+        # Hours requested
+        hours_spinbox = QDoubleSpinBox()
+        hours_spinbox.setRange(0.5, 8.0)
+        hours_spinbox.setSingleStep(0.5)
+        hours_spinbox.setValue(2.0)
+        hours_spinbox.setSuffix(" hours")
+        form_layout.addRow("Hours Requested:", hours_spinbox)
+        
+        # Reason
+        reason_edit = QTextEdit()
+        reason_edit.setPlaceholderText("Enter reason for overtime request (e.g., project deadline, urgent task)...")
+        reason_edit.setMaximumHeight(100)
+        form_layout.addRow("Reason:", reason_edit)
+        
+        layout.addLayout(form_layout)
+        
+        # Button layout
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        # Cancel button
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet(self.get_button_style("#687280"))
+        cancel_btn.clicked.connect(dialog.reject)
+        button_layout.addWidget(cancel_btn)
+        
+        # Submit button
+        submit_btn = QPushButton("Submit Request")
+        submit_btn.setStyleSheet(self.get_button_style("#F59E0B"))
+        
+        def submit_overtime():
+            # Validate
+            request_date = overtime_date_edit.date().toPyDate()
+            hours = hours_spinbox.value()
+            reason = reason_edit.toPlainText().strip()
+            
+            if not reason:
+                show_warning(dialog, "Missing Reason", "Please provide a reason for your overtime request.")
+                return
+            
+            # Check if already has pending request for this date
+            if OvertimeModel.has_pending_request(self.employee_id, request_date):
+                show_warning(
+                    dialog, 
+                    "Duplicate Request", 
+                    f"You already have a pending overtime request for {request_date}."
+                )
+                return
+            
+            # Check if already approved for this date
+            existing = OvertimeModel.get_approved_overtime_for_date(self.employee_id, request_date)
+            if existing:
+                show_warning(
+                    dialog, 
+                    "Already Approved", 
+                    f"You already have approved overtime for {request_date}."
+                )
+                return
+            
+            # Submit overtime request
+            if OvertimeModel.create_request(self.employee_id, request_date, hours, reason):
+                show_info(
+                    dialog,
+                    "Success",
+                    f"Overtime request submitted successfully!\n\n"
+                    f"Date: {request_date}\n"
+                    f"Hours: {hours}\n\n"
+                    f"Your request is pending admin approval."
+                )
+                dialog.accept()
+            else:
+                show_error(dialog, "Error", "Failed to submit overtime request. Please try again.")
+        
+        submit_btn.clicked.connect(submit_overtime)
+        button_layout.addWidget(submit_btn)
+        
+        layout.addLayout(button_layout)
+        dialog.setLayout(layout)
+        
+        dialog.exec()
